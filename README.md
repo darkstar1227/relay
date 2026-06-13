@@ -10,13 +10,46 @@ A lightweight CLI tool for switching between multiple Claude Code accounts insta
 
 ## Installation
 
-Run from inside the cloned repo:
+Clone the repo and run the installer:
 
 ```bash
+git clone https://github.com/darkstar1227/relay.git
+cd relay
+
+# Make the script executable
+chmod +x relay
+
+# Install (creates a symlink in /usr/local/bin)
 ./relay install
 ```
 
 This creates a symlink at `/usr/local/bin/relay` (falls back to `~/bin/relay` if permissions are restricted).
+
+### Verify permissions
+
+After installation, confirm the script and data directory have the correct permissions:
+
+```bash
+# Script must be executable
+ls -l $(which relay)
+# expected: -rwxr-xr-x ... or lrwxr-xr-x ... (symlink)
+
+# Data directory and credentials must be owner-only
+ls -la ~/.claude-relay/
+# expected: drwx------  ~/.claude-relay/
+# expected: drwx------  ~/.claude-relay/credentials/
+
+# Each credential file must be owner-read-only
+ls -la ~/.claude-relay/credentials/
+# expected: -rw-------  *.json
+```
+
+If any permissions are wrong, fix them with:
+
+```bash
+chmod 700 ~/.claude-relay ~/.claude-relay/credentials
+chmod 600 ~/.claude-relay/credentials/*.json
+```
 
 ## Quick Start
 

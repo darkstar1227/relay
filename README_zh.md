@@ -5,7 +5,36 @@ Claude Code 多帳號快速切換工具。
 ## 安裝
 
 ```bash
+git clone https://github.com/darkstar1227/relay.git
+cd relay
+
+# 給予執行權限
+chmod +x relay
+
+# 安裝（建立 symlink 到 /usr/local/bin）
 ./relay install
+```
+
+### 確認權限正確
+
+```bash
+# 確認腳本可執行
+ls -l $(which relay)
+
+# 資料目錄與憑證目錄需為僅限擁有者存取
+ls -la ~/.claude-relay/
+# 預期：drwx------
+
+# 每個憑證檔案需為僅限擁有者讀寫
+ls -la ~/.claude-relay/credentials/
+# 預期：-rw-------  *.json
+```
+
+如果權限有誤，執行以下指令修正：
+
+```bash
+chmod 700 ~/.claude-relay ~/.claude-relay/credentials
+chmod 600 ~/.claude-relay/credentials/*.json
 ```
 
 ## 使用
