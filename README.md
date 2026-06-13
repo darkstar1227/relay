@@ -1,39 +1,75 @@
 # relay
 
-Claude Code 多帳號快速切換工具。
+A lightweight CLI tool for switching between multiple Claude Code accounts instantly.
 
-## 安裝
+## Requirements
+
+- macOS (uses Keychain for credential storage)
+- [`claude`](https://docs.anthropic.com/en/docs/claude-code) CLI installed
+- `python3` available
+
+## Installation
+
+Run from inside the cloned repo:
 
 ```bash
 ./relay install
 ```
 
-## 使用
+This creates a symlink at `/usr/local/bin/relay` (falls back to `~/bin/relay` if permissions are restricted).
 
-| 指令 | 說明 |
-|------|------|
-| `!relay` | 選單 + 5hr 用量 |
-| `!relay 2` | 切到第 2 個帳號 |
-| `!relay work` | 切到指定名稱 |
-| `!relay status` | 目前帳號詳細用量 |
-
-## 帳號管理
+## Quick Start
 
 ```bash
-relay add <名稱>           # 新增帳號（需在 Terminal 執行，開瀏覽器登入）
-relay save <名稱>          # 儲存目前登入狀態
-relay rename <舊> <新>     # 重新命名帳號
-relay list                 # 完整列表（含週用量）
-relay remove <名稱>        # 刪除帳號
-relay sessions             # Session 列表
-relay uninstall            # 完全移除 relay 及帳號資料
+# Add your first account (opens browser for login — must run in a regular Terminal, not inside Claude Code)
+relay add personal
+
+# Add a second account
+relay add work
+
+# Switch accounts
+relay 2        # by index
+relay work     # by name
 ```
 
-## 原理
+## Usage Inside Claude Code
 
-切換 macOS Keychain 內的 `Claude Code-credentials` OAuth 憑證。Sessions 存在 `~/.claude/projects/`，所有帳號共用，切換後 `claude -c` 直接繼續。
+Prefix commands with `!` to run them inline:
 
-## 相容性
+| Command | Description |
+|---------|-------------|
+| `!relay` | Account menu with 5-hour usage |
+| `!relay 2` | Switch to account #2 |
+| `!relay work` | Switch to account named "work" |
+| `!relay status` | Detailed usage for current account |
 
-- macOS（使用 Keychain）
-- 需要 `python3`、`claude` CLI
+## Account Management
+
+| Command | Description |
+|---------|-------------|
+| `relay add <name>` | Add account via browser login |
+| `relay add-force <name>` | Force re-login for existing account |
+| `relay save <name>` | Save current login state as a named account |
+| `relay rename <old> <new>` | Rename an account |
+| `relay list` | Full list with weekly usage |
+| `relay list --no-usage` | List without querying the API |
+| `relay remove <name>` | Delete an account |
+| `relay sessions` | Show all Claude Code sessions |
+| `relay uninstall` | Remove relay and all account data |
+
+## How It Works
+
+relay stores a snapshot of each account's OAuth credentials (from macOS Keychain) in `~/.claude-relay/credentials/`. Switching writes the target account's credentials back into the Keychain entry that Claude Code reads from (`Claude Code-credentials`).
+
+Sessions live in `~/.claude/projects/` and are shared across all accounts — after switching, use `claude -c` to resume the last session or `claude --resume <id>` to pick a specific one.
+
+> **Note:** `relay add` must be run in a regular Terminal, not inside Claude Code, because the browser login flow is not available inside an active session.
+
+## Files
+
+```
+~/.claude-relay/
+├── credentials/   # Per-account credential snapshots (chmod 700)
+├── meta/          # Per-account email cache
+└── current        # Name of the active account
+```

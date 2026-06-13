@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────
-# relay v2 — Claude Code 多帳號切換工具
-#   !relay          選單 + 用量
-#   !relay 2        按編號切換
-#   !relay work     按名稱切換
-# 相容 macOS bash 3.2 / Linux / WSL
+# relay v2 — multi-account switcher for Claude Code
+#   !relay          account menu + usage
+#   !relay 2        switch by index
+#   !relay work     switch by name
+# compatible with macOS bash 3.2 / Linux / WSL
 # ─────────────────────────────────────────────────────────────────────
 set -u
 
@@ -15,7 +15,7 @@ CURRENT_FILE="${RELAY_DIR}/current"
 CLAUDE_DIR="${HOME}/.claude"
 CLAUDE_JSON="${HOME}/.claude.json"
 REAL_CLAUDE=$(command -v claude 2>/dev/null || echo "")
-# macOS: /usr/bin/python3 uses the system TLS stack (proper certs);
+# macOS: /usr/bin/python3 uses the system TLS stack (correct certs);
 # /usr/local/bin/python3 (Homebrew/standalone) often lacks bundled certs → SSL failures
 if [[ "$(uname)" == "Darwin" ]] && [[ -x "/usr/bin/python3" ]]; then
   PY="/usr/bin/python3"
@@ -23,8 +23,8 @@ else
   PY=$(command -v python3 || command -v python || echo "")
 fi
 
-# macOS Keychain helpers（新版 Claude Code 使用固定 service name）
-# 主憑證：service="Claude Code-credentials"，account=$(whoami)
+# macOS Keychain helpers
+# Claude Code stores OAuth credentials under a fixed service name with no hash suffix
 CC_KC_SVC="Claude Code-credentials"
 
 kc_read() {
@@ -49,14 +49,14 @@ hdr()  { printf "\n${B}${MG}  %s${R}\n  ${D}────────────
 mkdir -p "${CREDS_STORE}" "${META_STORE}" "${CLAUDE_DIR}"
 chmod 700 "${RELAY_DIR}" "${CREDS_STORE}" 2>/dev/null || true
 
-[[ -z "${PY}" ]] && { err "需要 python3"; exit 1; }
+[[ -z "${PY}" ]] && { err "python3 is required"; exit 1; }
 
 current_name()   { [[ -f "${CURRENT_FILE}" ]] && cat "${CURRENT_FILE}" || echo ""; }
 account_creds()  { echo "${CREDS_STORE}/$1.json"; }
 account_meta()   { echo "${META_STORE}/$1"; }
 account_exists() { [[ -f "$(account_creds "$1")" ]]; }
 
-# 帳號列表（排序，bash 3.2 相容：一行一個）
+# list accounts sorted, one per line (bash 3.2 compatible)
 list_account_names() {
   local f
   for f in "${CREDS_STORE}"/*.json; do
@@ -74,7 +74,7 @@ account_by_index() {
   return 1
 }
 
-# 從 ~/.claude.json 抓 email（登入後 Claude Code 會寫入 oauthAccount）
+# read the logged-in email from ~/.claude.json (written by Claude Code after login)
 grab_email_from_claude_json() {
   [[ -f "${CLAUDE_JSON}" ]] || { echo ""; return; }
   "${PY}" - "${CLAUDE_JSON}" 2>/dev/null <<'EOF'
@@ -106,13 +106,13 @@ require_account() {
 
 require_claude() {
   [[ -n "${REAL_CLAUDE}" ]] && return 0
-  err "找不到 claude，請先安裝: npm i -g @anthropic-ai/claude-code"
+  err "claude not found — install it with: npm i -g @anthropic-ai/claude-code"
   exit 1
 }
 
 # ══════════════════════════════════════════════════════════════════
-# Python 核心：並行查 usage + 渲染表格（一次呼叫，避開 bash 3.2 限制）
-# 參數: <mode: quick|full> <creds_dir> <meta_dir> <current_name> [--no-usage]
+# Python core: parallel usage fetch + table rendering
+# args: <mode: quick|full> <creds_dir> <meta_dir> <current_name> [--no-usage]
 # ══════════════════════════════════════════════════════════════════
 render_table() {
   "${PY}" - "$@" <<'EOF'
@@ -135,7 +135,7 @@ def reset_in(iso):
     try:
         ts = datetime.datetime.fromisoformat(iso.replace('Z','+00:00'))
         s = (ts - datetime.datetime.now(datetime.timezone.utc)).total_seconds()
-        if s <= 0: return '重置中'
+        if s <= 0: return 'resetting'
         h, rem = divmod(int(s), 3600)
         return f'{h}h{rem//60:02d}m'
     except Exception:
@@ -143,7 +143,7 @@ def reset_in(iso):
 
 names = sorted(os.path.basename(p)[:-5] for p in glob.glob(os.path.join(creds_dir, '*.json')))
 if not names:
-    print(f'  \033[33m⚠\033[0m 尚無帳號，執行: {B}relay add <名稱>{R}')
+    print(f'  \033[33m⚠\033[0m No accounts yet. Run: {B}relay add <name>{R}')
     sys.exit(0)
 
 def get_email(name):
@@ -169,7 +169,7 @@ def fetch(name):
 
 usage = {}
 if not no_usage:
-    sys.stderr.write('  \033[2m查詢用量...\033[0m\r')
+    sys.stderr.write('  \033[2mfetching usage...\033[0m\r')
     sys.stderr.flush()
     with ThreadPoolExecutor(max_workers=min(len(names), 6)) as ex:
         for fut in as_completed([ex.submit(fetch, n) for n in names]):
@@ -197,7 +197,7 @@ def u7_str(d):
     return f'{c}[' + '█'*f + '░'*(8-f) + f']{R} {c}{u}%{R}'
 
 if mode == 'quick':
-    print(f'\n  {B}{MG}relay{R} {D}— 快速切換{R}')
+    print(f'\n  {B}{MG}relay{R} {D}— switch account{R}')
     print(f'  {D}' + '─'*45 + R)
     for i, name in enumerate(names, 1):
         cur = name == current
@@ -207,10 +207,10 @@ if mode == 'quick':
         u = u5_str(usage.get(name)) if not no_usage else ''
         print(f'  {marker}  {ncol}{name:<12}{R}  {D}{email:<26}{R}  {u}')
     print()
-    print(f'  {D}切換：{R}{CY}!relay <編號或名稱>{R}   {D}詳細：{R}{CY}!relay status{R}')
+    print(f'  {D}switch:{R} {CY}!relay <index or name>{R}   {D}details:{R} {CY}!relay status{R}')
     print()
 else:
-    print(f'  {B}{"#":<3}{"帳號":<13} {"Email":<28} {"5hr 用量":<34} 週用量{R}')
+    print(f'  {B}{"#":<3}{"account":<13} {"email":<28} {"5hr usage":<34} 7d usage{R}')
     print(f'  {D}' + '─'*88 + R)
     for i, name in enumerate(names, 1):
         cur = name == current
@@ -220,28 +220,29 @@ else:
         d = usage.get(name)
         u5 = u5_str(d) if not no_usage else '—'
         u7 = u7_str(d) if not no_usage else '—'
-        # 對齊：ANSI 色碼不佔寬度，手動補
+        # ANSI codes don't consume display width — pad manually for alignment
         print(f'  {marker} {D}{i:<2}{R}{ncol}{name:<12}{R} {email:<28} {u5:<52} {u7}')
     print()
     n_warn = sum(1 for d in usage.values() if d and (d.get('five_hour') or {}).get('utilization', 0) >= 80)
     if n_warn:
-        print(f'  {RD}⚠ {n_warn} 個帳號用量超過 80%{R}')
+        print(f'  {RD}⚠ {n_warn} account(s) above 80% usage{R}')
 EOF
 }
 
 # ══════════════════════════════════════════════════════════════════
-# 核心切換
+# Core switch logic
 # ══════════════════════════════════════════════════════════════════
 do_switch() {
   local name="$1"
   local current; current=$(current_name)
 
   if [[ "${current}" == "${name}" ]]; then
-    ok "已經是帳號 '${B}${name}${R}'"
+    ok "Already on account '${B}${name}${R}'"
     return 0
   fi
 
-  # 備份目前 credentials（讓 refresh 過的 token 不丟失）
+  # Back up the current account's live token before switching
+  # (Claude Code refreshes tokens in-place; the snapshot may be stale)
   if [[ -n "${current}" ]] && account_exists "${current}" && [[ "$(uname)" == "Darwin" ]]; then
     local live; live=$(kc_read 2>/dev/null)
     [[ -n "${live}" ]] && printf '%s' "${live}" > "$(account_creds "${current}")"
@@ -249,22 +250,23 @@ do_switch() {
 
   echo "${name}" > "${CURRENT_FILE}"
 
-  # 寫入 macOS Keychain（新版 Claude Code 從 Keychain 讀取）
+  # Write the target account's credentials into the Keychain entry Claude Code reads
   if [[ "$(uname)" == "Darwin" ]]; then
     local content; content=$(cat "$(account_creds "${name}")")
-    kc_write "${content}" || warn "Keychain 寫入失敗，切換可能無效"
+    kc_write "${content}" || warn "Keychain write failed — switch may not take effect"
   fi
 
   local email; email=$(get_meta_email "${name}")
-  printf "\n  ${GR}${B}✓ 已切換 → %s${R}  ${D}%s${R}\n" "${name}" "${email}"
-  printf "  ${D}重啟 claude 後生效。繼續舊 session：${CY}claude -c${R}\n\n"
+  printf "\n  ${GR}${B}✓ switched → %s${R}  ${D}%s${R}\n" "${name}" "${email}"
+  printf "  ${D}Restart claude to apply. Resume last session: ${CY}claude -c${R}\n\n"
 }
 
 # ══════════════════════════════════════════════════════════════════
-# 指令
+# Commands
 # ══════════════════════════════════════════════════════════════════
 
-# 顯示前先把目前帳號的 token 從 Keychain 同步到檔案，避免 token 過期顯示 —
+# Sync the current account's token from Keychain to its snapshot file before
+# displaying usage — prevents showing stale/expired tokens as "—"
 _sync_current_creds() {
   [[ "$(uname)" != "Darwin" ]] && return
   local cur; cur=$(current_name)
@@ -276,21 +278,21 @@ _sync_current_creds() {
 cmd_quick() { _sync_current_creds; render_table quick "${CREDS_STORE}" "${META_STORE}" "$(current_name)" "$@"; }
 
 cmd_list() {
-  hdr "帳號列表"
+  hdr "Account List"
   _sync_current_creds
   render_table full "${CREDS_STORE}" "${META_STORE}" "$(current_name)" "$@"
   echo ""
-  ok "在 Claude Code 內：${CY}!relay <編號>${R} 快速切換"
+  ok "Inside Claude Code: ${CY}!relay <index>${R} to switch"
 }
 
 cmd_status() {
   _sync_current_creds
   local current; current=$(current_name)
-  hdr "目前狀態"
+  hdr "Current Status"
   if [[ -z "${current}" ]]; then
-    warn "尚未設定帳號（使用系統預設）"
+    warn "No account set (using system default)"
   elif ! account_exists "${current}"; then
-    warn "記錄的帳號 '${current}' 已不存在"
+    warn "Recorded account '${current}' no longer exists"
   else
     "${PY}" - "$(account_creds "${current}")" "${current}" "$(get_meta_email "${current}")" <<'EOF'
 import json, sys, datetime, urllib.request
@@ -299,21 +301,21 @@ creds_path, name, email = sys.argv[1], sys.argv[2], sys.argv[3]
 R='\033[0m'; B='\033[1m'; D='\033[2m'
 GR='\033[32m'; YL='\033[33m'; RD='\033[31m'; CY='\033[36m'
 
-print(f'  {B}帳號:{R}  {GR}{B}{name}{R}')
-print(f'  {B}Email:{R} {email}')
+print(f'  {B}Account:{R} {GR}{B}{name}{R}')
+print(f'  {B}Email:{R}   {email}')
 
 try:
     d = json.load(open(creds_path))
     tok = (d.get('claudeAiOauth') or {}).get('accessToken', '')
     if not tok:
-        print(f'\n  {YL}⚠ 無 access token，請重新登入{R}'); sys.exit(0)
+        print(f'\n  {YL}⚠ No access token — please log in again{R}'); sys.exit(0)
     req = urllib.request.Request(
         'https://api.anthropic.com/api/oauth/usage',
         headers={'Authorization': 'Bearer ' + tok, 'User-Agent': 'relay/2.0'})
     with urllib.request.urlopen(req, timeout=8) as r:
         u = json.loads(r.read())
 except Exception as e:
-    print(f'\n  {RD}✗ 用量查詢失敗: {e}{R}'); sys.exit(0)
+    print(f'\n  {RD}✗ Usage query failed: {e}{R}'); sys.exit(0)
 
 def color(x): return GR if x < 50 else (YL if x < 80 else RD)
 def bar(x, w=24):
@@ -322,56 +324,56 @@ def til(iso):
     try:
         ts = datetime.datetime.fromisoformat(iso.replace('Z','+00:00'))
         s = (ts - datetime.datetime.now(datetime.timezone.utc)).total_seconds()
-        if s <= 0: return '即將重置'
+        if s <= 0: return 'resetting now'
         h, rem = divmod(int(s), 3600)
-        return f'{h} 小時 {rem//60:02d} 分後重置'
+        return f'resets in {h}h {rem//60:02d}m'
     except Exception: return '—'
 
 fh = u.get('five_hour') or {}
 u5 = int(fh.get('utilization', 0) or 0)
 c5 = color(u5)
-print(f'\n  {B}5hr 用量:{R}')
+print(f'\n  {B}5hr usage:{R}')
 print(f'    {c5}[{bar(u5)}]{R} {c5}{B}{u5}%{R}')
 print(f'    {D}{til(fh.get("resets_at",""))}{R}')
 
 sd = u.get('seven_day') or {}
 if sd and sd.get('utilization') is not None:
     u7 = int(sd['utilization']); c7 = color(u7)
-    print(f'\n  {B}週用量:{R}')
+    print(f'\n  {B}7d usage:{R}')
     print(f'    {c7}[{bar(u7)}]{R} {c7}{u7}%{R}')
     if sd.get('resets_at'):
         print(f'    {D}{til(sd["resets_at"])}{R}')
 
 print()
-if u5 >= 90:   print(f'  {RD}{B}⚠  即將達上限，建議：!relay <其他帳號>{R}')
-elif u5 >= 70: print(f'  {YL}⚡ 用量偏高，留意切換時機{R}')
-else:          print(f'  {GR}✓  用量正常{R}')
+if u5 >= 90:   print(f'  {RD}{B}⚠  Approaching limit — consider switching: !relay <other>{R}')
+elif u5 >= 70: print(f'  {YL}⚡ Usage is high — watch for rate limits{R}')
+else:          print(f'  {GR}✓  Usage is normal{R}')
 EOF
   fi
   local n=0
   [[ -d "${CLAUDE_DIR}/projects" ]] && \
     n=$(find "${CLAUDE_DIR}/projects" -name "*.jsonl" 2>/dev/null | wc -l | tr -d ' ')
-  printf "\n  ${B}Sessions:${R} %s 個（所有帳號共用 ~/.claude/projects/）\n" "${n}"
+  printf "\n  ${B}Sessions:${R} %s (shared across all accounts in ~/.claude/projects/)\n" "${n}"
 }
 
 cmd_add() {
   local name="${1:-}"
-  [[ -z "${name}" ]] && { err "用法: relay add <名稱>"; exit 1; }
+  [[ -z "${name}" ]] && { err "usage: relay add <name>"; exit 1; }
   case "${name}" in
-    *[!a-zA-Z0-9_-]*) err "名稱只能用英數、底線、減號"; exit 1 ;;
+    *[!a-zA-Z0-9_-]*) err "name must contain only letters, numbers, underscores, or hyphens"; exit 1 ;;
   esac
   require_claude
   if account_exists "${name}"; then
-    warn "帳號 '${name}' 已存在"
-    log "強制重新登入: ${B}relay add-force ${name}${R}"
+    warn "Account '${name}' already exists"
+    log "To re-login: ${B}relay add-force ${name}${R}"
     return 0
   fi
 
-  hdr "新增帳號: ${name}"
-  warn "瀏覽器登入完成後回到終端機"
+  hdr "Add account: ${name}"
+  warn "Complete the browser login then return to this terminal"
   echo ""
 
-  # 記錄登入前的 token，用來確認是否真的做了新登入
+  # Record the token before login to detect whether a real new login occurred
   local tok_before; tok_before=$(kc_read 2>/dev/null | \
     "${PY}" -c "import json,sys; d=json.load(sys.stdin); print((d.get('claudeAiOauth') or {}).get('accessToken',''))" 2>/dev/null || echo "")
 
@@ -383,15 +385,15 @@ cmd_add() {
     "${PY}" -c "import json,sys; d=json.load(sys.stdin); print((d.get('claudeAiOauth') or {}).get('accessToken',''))" 2>/dev/null || echo "")
 
   if [[ -z "${kc_creds}" ]]; then
-    err "未偵測到 credentials（Keychain 內無 Claude Code 憑證）"
-    log "如果已登入成功，請執行: ${B}relay save ${name}${R}"
+    err "No credentials found in Keychain"
+    log "If login succeeded, run: ${B}relay save ${name}${R}"
     exit 1
   fi
 
   if [[ -n "${tok_before}" ]] && [[ "${tok_before}" == "${tok_after}" ]]; then
-    err "登入未完成（token 未變更）"
-    warn "請在 Terminal（非 Claude Code 內）執行 relay add，才能開啟瀏覽器登入"
-    log "若要將目前帳號另存新名稱，請改用: ${B}relay save ${name}${R}"
+    err "Login did not complete (token unchanged)"
+    warn "Run relay add from a regular Terminal — browser login is not available inside Claude Code"
+    log "To save the current account under a new name: ${B}relay save ${name}${R}"
     exit 1
   fi
 
@@ -399,13 +401,13 @@ cmd_add() {
   chmod 600 "$(account_creds "${name}")"
   save_meta_email "${name}"
   echo "${name}" > "${CURRENT_FILE}"
-  ok "帳號 '${B}${name}${R}' 新增成功  ${D}$(get_meta_email "${name}")${R}"
+  ok "Account '${B}${name}${R}' added  ${D}$(get_meta_email "${name}")${R}"
 }
 
 cmd_save() {
   local name="${1:-}"
-  [[ -z "${name}" ]] && { err "用法: relay save <名稱>"; exit 1; }
-  hdr "儲存目前帳號為: ${name}"
+  [[ -z "${name}" ]] && { err "usage: relay save <name>"; exit 1; }
+  hdr "Save current account as: ${name}"
 
   local saved=0
   if [[ "$(uname)" == "Darwin" ]]; then
@@ -413,32 +415,32 @@ cmd_save() {
     if [[ -n "${kc}" ]]; then
       printf '%s' "${kc}" > "$(account_creds "${name}")"
       chmod 600 "$(account_creds "${name}")"
-      ok "已從 Keychain 儲存"; saved=1
+      ok "Saved from Keychain"; saved=1
     fi
   fi
-  [[ ${saved} -eq 0 ]] && { err "找不到 credentials，請先用 claude /login 登入"; exit 1; }
+  [[ ${saved} -eq 0 ]] && { err "No credentials found — log in first with: claude /login"; exit 1; }
 
   save_meta_email "${name}"
   echo "${name}" > "${CURRENT_FILE}"
-  ok "帳號 '${B}${name}${R}' 已儲存  ${D}$(get_meta_email "${name}")${R}"
+  ok "Account '${B}${name}${R}' saved  ${D}$(get_meta_email "${name}")${R}"
 }
 
 cmd_remove() {
   local name="${1:-}"
-  [[ -z "${name}" ]] && { err "用法: relay remove <名稱>"; exit 1; }
-  account_exists "${name}" || { err "找不到帳號 '${name}'"; exit 1; }
-  printf "\n  ${YL}確定刪除 '${B}${name}${R}${YL}'？(y/N) ${R}"
+  [[ -z "${name}" ]] && { err "usage: relay remove <name>"; exit 1; }
+  account_exists "${name}" || { err "Account '${name}' not found"; exit 1; }
+  printf "\n  ${YL}Delete '${B}${name}${R}${YL}'? (y/N) ${R}"
   read -r c
-  [[ "${c}" = "y" || "${c}" = "Y" ]] || { log "取消"; return 0; }
+  [[ "${c}" = "y" || "${c}" = "Y" ]] || { log "cancelled"; return 0; }
   rm -f "$(account_creds "${name}")" "$(account_meta "${name}")"
   [[ "$(current_name)" == "${name}" ]] && rm -f "${CURRENT_FILE}"
-  ok "已刪除 '${name}'（sessions 不受影響）"
+  ok "Deleted '${name}' (sessions are unaffected)"
 }
 
 cmd_sessions() {
-  hdr "Sessions（全帳號共用）"
+  hdr "Sessions (shared across all accounts)"
   local base="${CLAUDE_DIR}/projects"
-  [[ -d "${base}" ]] || { warn "尚無 session"; return 0; }
+  [[ -d "${base}" ]] || { warn "No sessions found"; return 0; }
   "${PY}" - "${base}" <<'EOF'
 import os, sys, glob, datetime
 base = sys.argv[1]
@@ -456,115 +458,114 @@ for proj in sorted(os.listdir(base)):
         ts = datetime.datetime.fromtimestamp(os.path.getmtime(f)).strftime('%m/%d %H:%M')
         sz = os.path.getsize(f)
         szs = f'{sz/1048576:.1f}M' if sz > 1048576 else f'{sz//1024}K'
-        mark = f'  {GR}← 最近{R}' if total == 0 and i == 0 else ''
+        mark = f'  {GR}← latest{R}' if total == 0 and i == 0 else ''
         print(f'  {CY}{sid:<40}{R} {ts:<12} {szs}{mark}')
         total += 1
 print()
-print(f'  共 {total} 個 session' if total else '  尚無 session')
+print(f'  {total} session(s)' if total else '  No sessions found')
 EOF
-  log "${CY}claude -c${R} 繼續最後  ${D}|${R}  ${CY}claude -r${R} 選擇  ${D}|${R}  ${CY}claude --resume <id>${R}"
+  log "${CY}claude -c${R} resume last  ${D}|${R}  ${CY}claude -r${R} pick one  ${D}|${R}  ${CY}claude --resume <id>${R}"
 }
 
 cmd_install() {
   local script_path; script_path="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
   local target="/usr/local/bin/relay"
 
-  hdr "安裝 relay"
+  hdr "Install relay"
 
-  # 嘗試建立 symlink
   if ln -sf "${script_path}" "${target}" 2>/dev/null; then
-    ok "已安裝到 ${target}"
-    log "執行 ${CY}relay help${R} 確認"
+    ok "Installed at ${target}"
+    log "Run ${CY}relay help${R} to verify"
   elif sudo ln -sf "${script_path}" "${target}" 2>/dev/null; then
-    ok "已安裝到 ${target}（sudo）"
+    ok "Installed at ${target} (via sudo)"
   else
-    warn "/usr/local/bin 無法寫入，改裝到 ~/bin"
+    warn "Cannot write to /usr/local/bin — installing to ~/bin instead"
     mkdir -p "${HOME}/bin"
     ln -sf "${script_path}" "${HOME}/bin/relay"
-    ok "已安裝到 ${HOME}/bin/relay"
+    ok "Installed at ${HOME}/bin/relay"
     echo ""
-    warn "確認 ~/bin 在 PATH 內（.zshrc / .bashrc）："
+    warn "Make sure ~/bin is in your PATH (.zshrc / .bashrc):"
     printf "  ${CY}echo 'export PATH=\"\$HOME/bin:\$PATH\"' >> ~/.zshrc && source ~/.zshrc${R}\n"
   fi
 
   echo ""
-  hdr "初次設定"
-  printf "  ${B}1. 新增第一個帳號${R}\n"
-  printf "  ${CY}relay add personal${R}   ${D}# 開瀏覽器登入${R}\n\n"
-  printf "  ${B}2.（可選）新增更多帳號${R}\n"
+  hdr "First-time setup"
+  printf "  ${B}1. Add your first account${R}\n"
+  printf "  ${CY}relay add personal${R}   ${D}# opens browser login${R}\n\n"
+  printf "  ${B}2. (optional) Add more accounts${R}\n"
   printf "  ${CY}relay add work${R}\n"
   printf "  ${CY}relay add backup${R}\n\n"
-  printf "  ${B}3. 在 Claude Code 裡切換${R}\n"
-  printf "  ${CY}!relay${R}        ${D}# 選單 + 用量${R}\n"
-  printf "  ${CY}!relay 2${R}      ${D}# 切換到第 2 個帳號${R}\n"
-  printf "  ${CY}!relay work${R}   ${D}# 切換到指定名稱${R}\n\n"
+  printf "  ${B}3. Switch inside Claude Code${R}\n"
+  printf "  ${CY}!relay${R}        ${D}# menu + usage${R}\n"
+  printf "  ${CY}!relay 2${R}      ${D}# switch to account #2${R}\n"
+  printf "  ${CY}!relay work${R}   ${D}# switch to named account${R}\n\n"
 }
 
 cmd_rename() {
   local old="${1:-}" new="${2:-}"
-  [[ -z "${old}" || -z "${new}" ]] && { err "用法: relay rename <舊名稱> <新名稱>"; exit 1; }
+  [[ -z "${old}" || -z "${new}" ]] && { err "usage: relay rename <old-name> <new-name>"; exit 1; }
   case "${new}" in
-    *[!a-zA-Z0-9_-]*) err "名稱只能用英數、底線、減號"; exit 1 ;;
+    *[!a-zA-Z0-9_-]*) err "name must contain only letters, numbers, underscores, or hyphens"; exit 1 ;;
   esac
-  account_exists "${old}" || { err "找不到帳號 '${old}'"; exit 1; }
-  account_exists "${new}" && { err "帳號 '${new}' 已存在"; exit 1; }
+  account_exists "${old}" || { err "Account '${old}' not found"; exit 1; }
+  account_exists "${new}" && { err "Account '${new}' already exists"; exit 1; }
 
   mv "$(account_creds "${old}")" "$(account_creds "${new}")"
   [[ -f "$(account_meta "${old}")" ]] && mv "$(account_meta "${old}")" "$(account_meta "${new}")"
   [[ "$(current_name)" == "${old}" ]] && echo "${new}" > "${CURRENT_FILE}"
-  ok "已將 '${B}${old}${R}' 重新命名為 '${B}${new}${R}'"
+  ok "Renamed '${B}${old}${R}' → '${B}${new}${R}'"
 }
 
 cmd_uninstall() {
-  hdr "解除安裝 relay"
-  warn "這將刪除 relay 指令及所有帳號憑證資料"
-  printf "\n  ${YL}確定繼續？(y/N) ${R}"
+  hdr "Uninstall relay"
+  warn "This will remove the relay command and all account credential data"
+  printf "\n  ${YL}Continue? (y/N) ${R}"
   read -r c
-  [[ "${c}" = "y" || "${c}" = "Y" ]] || { log "取消"; return 0; }
+  [[ "${c}" = "y" || "${c}" = "Y" ]] || { log "cancelled"; return 0; }
 
   local removed=0
   for p in "/usr/local/bin/relay" "${HOME}/bin/relay"; do
     if [[ -L "${p}" || -f "${p}" ]]; then
-      rm -f "${p}" 2>/dev/null || sudo rm -f "${p}" 2>/dev/null || warn "無法刪除 ${p}（試試 sudo）"
-      ok "已移除 ${p}"
+      rm -f "${p}" 2>/dev/null || sudo rm -f "${p}" 2>/dev/null || warn "Could not remove ${p} (try sudo)"
+      ok "Removed ${p}"
       removed=1
     fi
   done
-  [[ ${removed} -eq 0 ]] && warn "找不到已安裝的 relay 指令（手動刪除腳本本身即可）"
+  [[ ${removed} -eq 0 ]] && warn "No installed relay command found (delete the script file manually)"
 
   if [[ -d "${RELAY_DIR}" ]]; then
     rm -rf "${RELAY_DIR}"
-    ok "已刪除 ${RELAY_DIR}（所有帳號資料）"
+    ok "Removed ${RELAY_DIR} (all account data)"
   fi
 
-  printf "\n  ${GR}relay 已完全移除。${R}\n\n"
+  printf "\n  ${GR}relay has been fully removed.${R}\n\n"
 }
 
 cmd_help() {
-  printf "\n${B}${CY}  relay${R} ${D}v2 — Claude Code 多帳號切換${R}\n\n"
-  printf "  ${B}Claude Code 內快捷（!）${R}\n"
-  printf "  %-32s %s\n" "  !relay"           "選單 + 5hr 用量"
-  printf "  %-32s %s\n" "  !relay 2"         "切到第 2 個帳號"
-  printf "  %-32s %s\n" "  !relay work"      "切到指定名稱"
-  printf "  %-32s %s\n" "  !relay status"    "目前帳號詳細用量"
+  printf "\n${B}${CY}  relay${R} ${D}v2 — multi-account switcher for Claude Code${R}\n\n"
+  printf "  ${B}Inside Claude Code (prefix with !)${R}\n"
+  printf "  %-32s %s\n" "  !relay"           "account menu + 5hr usage"
+  printf "  %-32s %s\n" "  !relay 2"         "switch to account #2"
+  printf "  %-32s %s\n" "  !relay work"      "switch to named account"
+  printf "  %-32s %s\n" "  !relay status"    "detailed usage for current account"
   echo ""
-  printf "  ${B}帳號管理${R}\n"
-  printf "  %-32s %s\n" "  relay add <名稱>"         "新增帳號（瀏覽器登入）"
-  printf "  %-32s %s\n" "  relay add-force <名稱>"   "強制重新登入"
-  printf "  %-32s %s\n" "  relay save <名稱>"        "儲存目前登入狀態"
-  printf "  %-32s %s\n" "  relay rename <舊> <新>"   "重新命名帳號"
-  printf "  %-32s %s\n" "  relay list"               "完整列表（含週用量）"
-  printf "  %-32s %s\n" "  relay list --no-usage"    "跳過 API 查詢"
-  printf "  %-32s %s\n" "  relay remove <名稱>"      "刪除帳號"
-  printf "  %-32s %s\n" "  relay sessions"           "Session 列表"
-  printf "  %-32s %s\n" "  relay uninstall"          "完全移除 relay 及帳號資料"
+  printf "  ${B}Account management${R}\n"
+  printf "  %-32s %s\n" "  relay add <name>"         "add account via browser login"
+  printf "  %-32s %s\n" "  relay add-force <name>"   "force re-login for existing account"
+  printf "  %-32s %s\n" "  relay save <name>"        "save current login state"
+  printf "  %-32s %s\n" "  relay rename <old> <new>" "rename an account"
+  printf "  %-32s %s\n" "  relay list"               "full list with weekly usage"
+  printf "  %-32s %s\n" "  relay list --no-usage"    "list without querying API"
+  printf "  %-32s %s\n" "  relay remove <name>"      "delete an account"
+  printf "  %-32s %s\n" "  relay sessions"           "show all sessions"
+  printf "  %-32s %s\n" "  relay uninstall"          "remove relay and all account data"
   echo ""
-  printf "  ${D}原理：切換 macOS Keychain 內的 OAuth 憑證，sessions 共用${R}\n"
-  printf "  ${D}切換後 claude -c 直接繼續、claude --resume <id> 指定繼續${R}\n\n"
+  printf "  ${D}switches the OAuth credential in macOS Keychain; sessions are shared${R}\n"
+  printf "  ${D}after switching: claude -c to resume, claude --resume <id> for a specific session${R}\n\n"
 }
 
 # ══════════════════════════════════════════════════════════════════
-# Dispatch（單一入口，無 fall-through）
+# Dispatch — single entry point, no fall-through
 # ══════════════════════════════════════════════════════════════════
 CMD="${1:-}"
 [[ $# -gt 0 ]] && shift
@@ -579,10 +580,10 @@ case "${CMD}" in
   switch|sw|use)
     if [[ -z "${1:-}" ]]; then cmd_quick
     elif [[ "${1}" =~ ^[0-9]+$ ]]; then
-      name=$(account_by_index "$1") || { err "沒有編號 $1 的帳號"; cmd_quick --no-usage; exit 1; }
+      name=$(account_by_index "$1") || { err "No account at index $1"; cmd_quick --no-usage; exit 1; }
       do_switch "${name}"
     else
-      account_exists "$1" || { err "找不到帳號 '$1'"; cmd_quick --no-usage; exit 1; }
+      account_exists "$1" || { err "Account '$1' not found"; cmd_quick --no-usage; exit 1; }
       do_switch "$1"
     fi ;;
   list|ls)          cmd_list "$@" ;;
@@ -600,16 +601,16 @@ case "${CMD}" in
     exec "${REAL_CLAUDE}" --continue ;;
   help|--help|-h)   cmd_help ;;
   *)
-    # 數字 → 按編號切換；名稱 → 按名稱切換；都不是 → 錯誤
+    # numeric → switch by index; name → switch by name; else → error
     if [[ "${CMD}" =~ ^[0-9]+$ ]]; then
-      name=$(account_by_index "${CMD}") || { err "沒有編號 ${CMD} 的帳號"; cmd_quick --no-usage; exit 1; }
+      name=$(account_by_index "${CMD}") || { err "No account at index ${CMD}"; cmd_quick --no-usage; exit 1; }
       do_switch "${name}"
     elif account_exists "${CMD}"; then
       do_switch "${CMD}"
     else
-      err "未知指令或帳號: ${CMD}"
+      err "Unknown command or account: ${CMD}"
       cmd_quick --no-usage
-      printf "  ${D}完整說明: ${CY}relay help${R}\n\n"
+      printf "  ${D}Run ${CY}relay help${R}${D} for usage${R}\n\n"
       exit 1
     fi ;;
 esac

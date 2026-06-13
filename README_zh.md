@@ -1,0 +1,39 @@
+# relay
+
+Claude Code 多帳號快速切換工具。
+
+## 安裝
+
+```bash
+./relay install
+```
+
+## 使用
+
+| 指令 | 說明 |
+|------|------|
+| `!relay` | 選單 + 5hr 用量 |
+| `!relay 2` | 切到第 2 個帳號 |
+| `!relay work` | 切到指定名稱 |
+| `!relay status` | 目前帳號詳細用量 |
+
+## 帳號管理
+
+```bash
+relay add <名稱>           # 新增帳號（需在 Terminal 執行，開瀏覽器登入）
+relay save <名稱>          # 儲存目前登入狀態
+relay rename <舊> <新>     # 重新命名帳號
+relay list                 # 完整列表（含週用量）
+relay remove <名稱>        # 刪除帳號
+relay sessions             # Session 列表
+relay uninstall            # 完全移除 relay 及帳號資料
+```
+
+## 原理
+
+切換 macOS Keychain 內的 `Claude Code-credentials` OAuth 憑證。Sessions 存在 `~/.claude/projects/`，所有帳號共用，切換後 `claude -c` 直接繼續。
+
+## 相容性
+
+- macOS（使用 Keychain）
+- 需要 `python3`、`claude` CLI
