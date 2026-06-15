@@ -146,7 +146,8 @@ Prefix commands with `!` to run them inline:
 | `relay list --no-usage` | List without querying the API |
 | `relay remove <name>` | Delete an account |
 | `relay sessions` | Show all Claude Code sessions |
-| `relay update` | Update to the latest version |
+| `relay version` | Show current version |
+| `relay update` | Check GitHub releases and update to the latest version |
 | `relay uninstall` | Remove relay and all account data (macOS/Linux only) |
 
 ## How It Works
@@ -172,3 +173,23 @@ Sessions live in `~/.claude/projects/` and are shared across all accounts — af
 |------|---------|
 | `relay.ps1` | Full PowerShell implementation |
 | `relay.cmd` | Thin CMD wrapper — delegates to `relay.ps1` |
+
+---
+
+## Publishing a New Release
+
+1. Bump the version in `package.json`
+2. Commit and tag:
+   ```bash
+   git add package.json
+   git commit -m "chore: bump version to x.y.z"
+   git tag vx.y.z
+   git push origin main --tags
+   ```
+3. Create a GitHub Release from the tag (the `relay update` command reads the latest release tag)
+4. Publish to npm:
+   ```bash
+   npm publish
+   ```
+
+Users will see the new version when they run `relay update`.

@@ -388,22 +388,55 @@ function cmd_sessions {
     fLog "${CY}claude -c${R} resume last  ${D}|${R}  ${CY}claude --resume <id>${R}"
 }
 
+function Get-RelayVersion {
+    $pkg = Join-Path $PSScriptRoot "package.json"
+    if (Test-Path $pkg) {
+        try { return (Get-Content $pkg -Raw | ConvertFrom-Json).version } catch {}
+    }
+    return "unknown"
+}
+
+function cmd_version {
+    Write-Host "relay $(Get-RelayVersion)"
+}
+
 function cmd_update {
     fHdr "Update relay"
+
+    $current = Get-RelayVersion
+    fLog "Current version: ${B}${current}${R}"
+
+    # Check latest GitHub release
+    $latest = ""
+    try {
+        $r = Invoke-RestMethod "https://api.github.com/repos/darkstar1227/relay/releases/latest" `
+            -Headers @{ "User-Agent" = "relay-update" } -TimeoutSec 6
+        $latest = $r.tag_name.TrimStart('v')
+    } catch {}
+
+    if (-not $latest) {
+        fWarn "Could not reach GitHub — skipping version check"
+    } elseif ($current -eq $latest) {
+        fOk "Already up to date ($current)"; return
+    } else {
+        fLog "Latest available: ${B}${latest}${R}"
+    }
+
     $npmCmd = Get-Command npm -ErrorAction SilentlyContinue
     if ($npmCmd) {
-        fLog "Updating via npm..."
+        fLog "Installing via npm..."
         & npm install -g claude-relay@latest
-        fOk "Done — run ${CY}relay help${R} to confirm version"
+        fOk "Updated to $(Get-RelayVersion)"
     } else {
         fWarn "npm not found"
-        fLog "Install npm or manually update: git pull in the relay source directory"
+        fLog "Install npm or manually: git pull in the relay source directory"
     }
 }
 
 function cmd_help {
+    $ver = Get-RelayVersion
     Write-Host ""
-    Write-Host "  ${B}${CY}relay${R} ${D}v2 — multi-account switcher for Claude Code (Windows)${R}"
+    Write-Host "  ${B}${CY}relay${R} ${D}${ver} — multi-account switcher for Claude Code (Windows)${R}"
     Write-Host ""
     Write-Host "  ${B}Commands${R}"
     @(
@@ -417,6 +450,7 @@ function cmd_help {
         @("  relay rename <old> <new>","rename an account"),
         @("  relay remove <name>",     "delete an account"),
         @("  relay sessions",          "show all sessions"),
+        @("  relay version",           "show current version"),
         @("  relay update",            "update to latest version"),
         @("  relay help",              "show this help")
     ) | ForEach-Object { Write-Host ("  {0,-36} {1}" -f $_[0], $_[1]) }
@@ -447,6 +481,9 @@ switch ($Cmd.ToLower()) {
     "mv"         { cmd_rename (Get-First $Rest) (Get-Second $Rest) }
     "sessions"   { cmd_sessions }
     "sess"       { cmd_sessions }
+    "version"    { cmd_version }
+    "--version"  { cmd_version }
+    "-v"         { cmd_version }
     "update"     { cmd_update }
     "help"       { cmd_help }
     "--help"     { cmd_help }

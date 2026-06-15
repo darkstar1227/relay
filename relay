@@ -526,22 +526,65 @@ cmd_rename() {
   ok "Renamed '${B}${old}${R}' → '${B}${new}${R}'"
 }
 
+_script_dir() {
+  # Resolve symlinks so we find package.json even when installed via npm/symlink
+  local src="$0"
+  while [[ -L "${src}" ]]; do src=$(readlink "${src}"); done
+  cd "$(dirname "${src}")" && pwd -P
+}
+
+_read_version() {
+  local pkg; pkg="$(_script_dir)/package.json"
+  [[ -f "${pkg}" ]] && \
+    "${PY}" -c "import json; print(json.load(open('${pkg}'))['version'])" 2>/dev/null \
+    || echo "unknown"
+}
+
+cmd_version() {
+  printf "relay %s\n" "$(_read_version)"
+}
+
 cmd_update() {
   hdr "Update relay"
+
+  local current; current=$(_read_version)
+  log "Current version: ${B}${current}${R}"
+
+  # Check latest GitHub release
+  local latest
+  latest=$("${PY}" - 2>/dev/null <<'PYEOF'
+import urllib.request, json, sys
+try:
+    req = urllib.request.Request(
+        'https://api.github.com/repos/darkstar1227/relay/releases/latest',
+        headers={'User-Agent': 'relay-update'})
+    with urllib.request.urlopen(req, timeout=6) as r:
+        print(json.loads(r.read())['tag_name'].lstrip('v'))
+except Exception as e:
+    sys.exit(1)
+PYEOF
+)
+
+  if [[ -z "${latest}" ]]; then
+    warn "Could not reach GitHub — skipping version check"
+  elif [[ "${current}" == "${latest}" ]]; then
+    ok "Already up to date (${current})"; return 0
+  else
+    log "Latest available: ${B}${latest}${R}"
+  fi
+
+  local relay_dir; relay_dir=$(_script_dir)
   local npm_cmd; npm_cmd=$(command -v npm 2>/dev/null)
   if [[ -n "${npm_cmd}" ]]; then
-    log "Updating via npm..."
+    log "Installing via npm..."
     npm install -g claude-relay@latest
-    ok "Done — run ${CY}relay help${R} to confirm version"
+    ok "Updated to $(_read_version)"
+  elif [[ -d "${relay_dir}/.git" ]]; then
+    log "npm not found — updating via git..."
+    git -C "${relay_dir}" pull
   else
-    local relay_dir; relay_dir="$(cd "$(dirname "$0")" && pwd -P)"
-    if [[ -d "${relay_dir}/.git" ]]; then
-      log "npm not found — updating via git..."
-      git -C "${relay_dir}" pull
-    else
-      err "Cannot update: npm not found and no .git directory"
-      log "Install via npm: ${CY}npm install -g claude-relay@latest${R}"
-    fi
+    err "Cannot update: npm not found and no .git directory"
+    log "Install via npm: ${CY}npm install -g claude-relay@latest${R}"
   fi
 }
 
@@ -571,7 +614,7 @@ cmd_uninstall() {
 }
 
 cmd_help() {
-  printf "\n${B}${CY}  relay${R} ${D}v2 — multi-account switcher for Claude Code${R}\n\n"
+  printf "\n${B}${CY}  relay${R} ${D}%s — multi-account switcher for Claude Code${R}\n\n" "$(_read_version)"
   printf "  ${B}Inside Claude Code (prefix with !)${R}\n"
   printf "  %-32s %s\n" "  !relay"           "account menu + 5hr usage"
   printf "  %-32s %s\n" "  !relay 2"         "switch to account #2"
@@ -587,6 +630,7 @@ cmd_help() {
   printf "  %-32s %s\n" "  relay list --no-usage"    "list without querying API"
   printf "  %-32s %s\n" "  relay remove <name>"      "delete an account"
   printf "  %-32s %s\n" "  relay sessions"           "show all sessions"
+  printf "  %-32s %s\n" "  relay version"             "show current version"
   printf "  %-32s %s\n" "  relay update"              "update to latest version"
   printf "  %-32s %s\n" "  relay uninstall"          "remove relay and all account data"
   echo ""
@@ -621,6 +665,7 @@ case "${CMD}" in
   remove|rm|del)    cmd_remove "$@" ;;
   rename|mv)        cmd_rename "$@" ;;
   sessions|sess)    cmd_sessions ;;
+  version|--version|-V) cmd_version ;;
   update)           cmd_update ;;
   install)          cmd_install ;;
   uninstall)        cmd_uninstall ;;
