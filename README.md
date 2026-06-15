@@ -2,13 +2,25 @@
 
 A lightweight CLI tool for switching between multiple Claude Code accounts instantly.
 
+## Platform Support
+
+| Platform | Credential Storage |
+|----------|--------------------|
+| macOS | Keychain (`Claude Code-credentials`) |
+| Linux / WSL | `~/.claude/.credentials.json` |
+| Windows | `%USERPROFILE%\.claude\.credentials.json` |
+
 ## Requirements
 
-- macOS (uses Keychain for credential storage)
 - [`claude`](https://docs.anthropic.com/en/docs/claude-code) CLI installed
-- `python3` available
+- macOS / Linux / WSL: `python3` available
+- Windows: PowerShell 5.1+ (built into Windows 10/11)
+
+---
 
 ## Installation
+
+### macOS / Linux / WSL
 
 Clone the repo and run the installer:
 
@@ -25,9 +37,7 @@ chmod +x relay
 
 This creates a symlink at `/usr/local/bin/relay` (falls back to `~/bin/relay` if permissions are restricted).
 
-### Verify permissions
-
-After installation, confirm the script and data directory have the correct permissions:
+#### Verify permissions
 
 ```bash
 # Script must be executable
@@ -39,7 +49,6 @@ ls -la ~/.claude-relay/
 # expected: drwx------  ~/.claude-relay/
 # expected: drwx------  ~/.claude-relay/credentials/
 
-# Each credential file must be owner-read-only
 ls -la ~/.claude-relay/credentials/
 # expected: -rw-------  *.json
 ```
@@ -51,10 +60,71 @@ chmod 700 ~/.claude-relay ~/.claude-relay/credentials
 chmod 600 ~/.claude-relay/credentials/*.json
 ```
 
+---
+
+### Windows (CMD / PowerShell)
+
+Clone the repo:
+
+```powershell
+git clone https://github.com/darkstar1227/relay.git
+cd relay
+```
+
+Add the `relay` folder to your `PATH` so you can run `relay` from any directory:
+
+**Option A — permanent (recommended):**
+
+```powershell
+# Run once in PowerShell (adds to your user PATH permanently)
+$dir = (Get-Location).Path
+[Environment]::SetEnvironmentVariable(
+    "PATH",
+    "$([Environment]::GetEnvironmentVariable('PATH','User'));$dir",
+    "User"
+)
+```
+
+Restart your terminal after running this.
+
+**Option B — copy files to an existing PATH directory:**
+
+```powershell
+# Example: copy to a bin folder already in PATH
+Copy-Item relay.ps1, relay.cmd "$HOME\bin\"
+```
+
+#### First run — allow the script to execute
+
+Windows blocks unsigned scripts by default. Run once to allow this script:
+
+```powershell
+# For this script only (safest)
+Unblock-File .\relay.ps1
+```
+
+Alternatively, if your organisation policy allows, you can set the execution policy for your user:
+
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+```
+
+#### Verify installation
+
+```powershell
+# PowerShell
+relay help
+
+# CMD
+relay help
+```
+
+---
+
 ## Quick Start
 
 ```bash
-# Add your first account (opens browser for login — must run in a regular Terminal, not inside Claude Code)
+# Add your first account (opens browser — must run outside Claude Code)
 relay add personal
 
 # Add a second account
@@ -88,11 +158,11 @@ Prefix commands with `!` to run them inline:
 | `relay list --no-usage` | List without querying the API |
 | `relay remove <name>` | Delete an account |
 | `relay sessions` | Show all Claude Code sessions |
-| `relay uninstall` | Remove relay and all account data |
+| `relay uninstall` | Remove relay and all account data (macOS/Linux only) |
 
 ## How It Works
 
-relay stores a snapshot of each account's OAuth credentials (from macOS Keychain) in `~/.claude-relay/credentials/`. Switching writes the target account's credentials back into the Keychain entry that Claude Code reads from (`Claude Code-credentials`).
+relay stores a snapshot of each account's OAuth credentials in `~/.claude-relay/credentials/`. Switching writes the target account's credentials back into the store that Claude Code reads from.
 
 Sessions live in `~/.claude/projects/` and are shared across all accounts — after switching, use `claude -c` to resume the last session or `claude --resume <id>` to pick a specific one.
 
@@ -102,7 +172,14 @@ Sessions live in `~/.claude/projects/` and are shared across all accounts — af
 
 ```
 ~/.claude-relay/
-├── credentials/   # Per-account credential snapshots (chmod 700)
+├── credentials/   # Per-account credential snapshots (chmod 700 on Unix)
 ├── meta/          # Per-account email cache
 └── current        # Name of the active account
 ```
+
+### Windows-specific files
+
+| File | Purpose |
+|------|---------|
+| `relay.ps1` | Full PowerShell implementation |
+| `relay.cmd` | Thin CMD wrapper — delegates to `relay.ps1` |
