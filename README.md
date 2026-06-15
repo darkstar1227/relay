@@ -174,22 +174,3 @@ Sessions live in `~/.claude/projects/` and are shared across all accounts — af
 | `relay.ps1` | Full PowerShell implementation |
 | `relay.cmd` | Thin CMD wrapper — delegates to `relay.ps1` |
 
----
-
-## Publishing a New Release
-
-1. Bump the version in `package.json`
-2. Commit and tag:
-   ```bash
-   git add package.json
-   git commit -m "chore: bump version to x.y.z"
-   git tag vx.y.z
-   git push origin main --tags
-   ```
-3. Create a GitHub Release from the tag (the `relay update` command reads the latest release tag)
-4. Publish to npm:
-   ```bash
-   npm publish
-   ```
-
-Users will see the new version when they run `relay update`.
