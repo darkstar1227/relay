@@ -388,6 +388,19 @@ function cmd_sessions {
     fLog "${CY}claude -c${R} resume last  ${D}|${R}  ${CY}claude --resume <id>${R}"
 }
 
+function cmd_update {
+    fHdr "Update relay"
+    $npmCmd = Get-Command npm -ErrorAction SilentlyContinue
+    if ($npmCmd) {
+        fLog "Updating via npm..."
+        & npm install -g claude-relay@latest
+        fOk "Done — run ${CY}relay help${R} to confirm version"
+    } else {
+        fWarn "npm not found"
+        fLog "Install npm or manually update: git pull in the relay source directory"
+    }
+}
+
 function cmd_help {
     Write-Host ""
     Write-Host "  ${B}${CY}relay${R} ${D}v2 — multi-account switcher for Claude Code (Windows)${R}"
@@ -404,6 +417,7 @@ function cmd_help {
         @("  relay rename <old> <new>","rename an account"),
         @("  relay remove <name>",     "delete an account"),
         @("  relay sessions",          "show all sessions"),
+        @("  relay update",            "update to latest version"),
         @("  relay help",              "show this help")
     ) | ForEach-Object { Write-Host ("  {0,-36} {1}" -f $_[0], $_[1]) }
     Write-Host ""
@@ -433,6 +447,7 @@ switch ($Cmd.ToLower()) {
     "mv"         { cmd_rename (Get-First $Rest) (Get-Second $Rest) }
     "sessions"   { cmd_sessions }
     "sess"       { cmd_sessions }
+    "update"     { cmd_update }
     "help"       { cmd_help }
     "--help"     { cmd_help }
     "-h"         { cmd_help }

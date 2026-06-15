@@ -526,6 +526,25 @@ cmd_rename() {
   ok "Renamed '${B}${old}${R}' → '${B}${new}${R}'"
 }
 
+cmd_update() {
+  hdr "Update relay"
+  local npm_cmd; npm_cmd=$(command -v npm 2>/dev/null)
+  if [[ -n "${npm_cmd}" ]]; then
+    log "Updating via npm..."
+    npm install -g claude-relay@latest
+    ok "Done — run ${CY}relay help${R} to confirm version"
+  else
+    local relay_dir; relay_dir="$(cd "$(dirname "$0")" && pwd -P)"
+    if [[ -d "${relay_dir}/.git" ]]; then
+      log "npm not found — updating via git..."
+      git -C "${relay_dir}" pull
+    else
+      err "Cannot update: npm not found and no .git directory"
+      log "Install via npm: ${CY}npm install -g claude-relay@latest${R}"
+    fi
+  fi
+}
+
 cmd_uninstall() {
   hdr "Uninstall relay"
   warn "This will remove the relay command and all account credential data"
@@ -568,6 +587,7 @@ cmd_help() {
   printf "  %-32s %s\n" "  relay list --no-usage"    "list without querying API"
   printf "  %-32s %s\n" "  relay remove <name>"      "delete an account"
   printf "  %-32s %s\n" "  relay sessions"           "show all sessions"
+  printf "  %-32s %s\n" "  relay update"              "update to latest version"
   printf "  %-32s %s\n" "  relay uninstall"          "remove relay and all account data"
   echo ""
   printf "  ${D}switches the OAuth credential (macOS Keychain / Linux ~/.claude/.credentials.json); sessions are shared${R}\n"
@@ -601,6 +621,7 @@ case "${CMD}" in
   remove|rm|del)    cmd_remove "$@" ;;
   rename|mv)        cmd_rename "$@" ;;
   sessions|sess)    cmd_sessions ;;
+  update)           cmd_update ;;
   install)          cmd_install ;;
   uninstall)        cmd_uninstall ;;
   continue|cont|c)

@@ -20,9 +20,25 @@ A lightweight CLI tool for switching between multiple Claude Code accounts insta
 
 ## Installation
 
-### macOS / Linux / WSL
+### npm (all platforms — recommended)
 
-Clone the repo and run the installer:
+Requires Node.js 16+. Installs the `relay` command globally:
+
+```bash
+npm install -g claude-relay
+```
+
+To update later:
+
+```bash
+npm update -g claude-relay
+# or from inside relay:
+relay update
+```
+
+---
+
+### macOS / Linux / WSL (manual)
 
 ```bash
 git clone https://github.com/darkstar1227/relay.git
@@ -40,20 +56,15 @@ This creates a symlink at `/usr/local/bin/relay` (falls back to `~/bin/relay` if
 #### Verify permissions
 
 ```bash
-# Script must be executable
 ls -l $(which relay)
-# expected: -rwxr-xr-x ... or lrwxr-xr-x ... (symlink)
+# expected: -rwxr-xr-x ... or lrwxr-xr-x ...
 
-# Data directory and credentials must be owner-only
 ls -la ~/.claude-relay/
 # expected: drwx------  ~/.claude-relay/
 # expected: drwx------  ~/.claude-relay/credentials/
-
-ls -la ~/.claude-relay/credentials/
-# expected: -rw-------  *.json
 ```
 
-If any permissions are wrong, fix them with:
+If any permissions are wrong:
 
 ```bash
 chmod 700 ~/.claude-relay ~/.claude-relay/credentials
@@ -62,21 +73,18 @@ chmod 600 ~/.claude-relay/credentials/*.json
 
 ---
 
-### Windows (CMD / PowerShell)
+### Windows (CMD / PowerShell, manual)
 
-Clone the repo:
+If you prefer not to use npm, clone the repo and add it to PATH manually.
 
 ```powershell
 git clone https://github.com/darkstar1227/relay.git
 cd relay
 ```
 
-Add the `relay` folder to your `PATH` so you can run `relay` from any directory:
-
-**Option A — permanent (recommended):**
+**Add to PATH permanently:**
 
 ```powershell
-# Run once in PowerShell (adds to your user PATH permanently)
 $dir = (Get-Location).Path
 [Environment]::SetEnvironmentVariable(
     "PATH",
@@ -87,35 +95,15 @@ $dir = (Get-Location).Path
 
 Restart your terminal after running this.
 
-**Option B — copy files to an existing PATH directory:**
+**Allow the script to execute (first time only):**
 
 ```powershell
-# Example: copy to a bin folder already in PATH
-Copy-Item relay.ps1, relay.cmd "$HOME\bin\"
-```
-
-#### First run — allow the script to execute
-
-Windows blocks unsigned scripts by default. Run once to allow this script:
-
-```powershell
-# For this script only (safest)
 Unblock-File .\relay.ps1
 ```
 
-Alternatively, if your organisation policy allows, you can set the execution policy for your user:
+**Verify:**
 
 ```powershell
-Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
-```
-
-#### Verify installation
-
-```powershell
-# PowerShell
-relay help
-
-# CMD
 relay help
 ```
 
@@ -158,6 +146,7 @@ Prefix commands with `!` to run them inline:
 | `relay list --no-usage` | List without querying the API |
 | `relay remove <name>` | Delete an account |
 | `relay sessions` | Show all Claude Code sessions |
+| `relay update` | Update to the latest version |
 | `relay uninstall` | Remove relay and all account data (macOS/Linux only) |
 
 ## How It Works
