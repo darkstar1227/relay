@@ -23,18 +23,30 @@ else
   PY=$(command -v python3 || command -v python || echo "")
 fi
 
-# macOS Keychain helpers
-# Claude Code stores OAuth credentials under a fixed service name with no hash suffix
+# Credential helpers — macOS Keychain or Linux file fallback
+# Claude Code on macOS: Keychain service "Claude Code-credentials"
+# Claude Code on Linux: ~/.claude/.credentials.json
 CC_KC_SVC="Claude Code-credentials"
+LINUX_CREDS="${CLAUDE_DIR}/.credentials.json"
 
 kc_read() {
-  security find-generic-password -s "${CC_KC_SVC}" -a "$(whoami)" -w 2>/dev/null
+  if [[ "$(uname)" == "Darwin" ]]; then
+    security find-generic-password -s "${CC_KC_SVC}" -a "$(whoami)" -w 2>/dev/null
+  else
+    [[ -f "${LINUX_CREDS}" ]] && cat "${LINUX_CREDS}" || echo ""
+  fi
 }
 
 kc_write() {
-  local content="$1" user; user=$(whoami)
-  security delete-generic-password -s "${CC_KC_SVC}" -a "${user}" >/dev/null 2>&1 || true
-  security add-generic-password -s "${CC_KC_SVC}" -a "${user}" -w "${content}" >/dev/null 2>&1
+  local content="$1"
+  if [[ "$(uname)" == "Darwin" ]]; then
+    local user; user=$(whoami)
+    security delete-generic-password -s "${CC_KC_SVC}" -a "${user}" >/dev/null 2>&1 || true
+    security add-generic-password -s "${CC_KC_SVC}" -a "${user}" -w "${content}" >/dev/null 2>&1
+  else
+    printf '%s' "${content}" > "${LINUX_CREDS}"
+    chmod 600 "${LINUX_CREDS}"
+  fi
 }
 
 R=$'\033[0m'; B=$'\033[1m'; D=$'\033[2m'
@@ -243,18 +255,16 @@ do_switch() {
 
   # Back up the current account's live token before switching
   # (Claude Code refreshes tokens in-place; the snapshot may be stale)
-  if [[ -n "${current}" ]] && account_exists "${current}" && [[ "$(uname)" == "Darwin" ]]; then
+  if [[ -n "${current}" ]] && account_exists "${current}"; then
     local live; live=$(kc_read 2>/dev/null)
     [[ -n "${live}" ]] && printf '%s' "${live}" > "$(account_creds "${current}")"
   fi
 
   echo "${name}" > "${CURRENT_FILE}"
 
-  # Write the target account's credentials into the Keychain entry Claude Code reads
-  if [[ "$(uname)" == "Darwin" ]]; then
-    local content; content=$(cat "$(account_creds "${name}")")
-    kc_write "${content}" || warn "Keychain write failed — switch may not take effect"
-  fi
+  # Write the target account's credentials into the store Claude Code reads
+  local content; content=$(cat "$(account_creds "${name}")")
+  kc_write "${content}" || warn "Credential write failed — switch may not take effect"
 
   local email; email=$(get_meta_email "${name}")
   printf "\n  ${GR}${B}✓ switched → %s${R}  ${D}%s${R}\n" "${name}" "${email}"
@@ -265,10 +275,9 @@ do_switch() {
 # Commands
 # ══════════════════════════════════════════════════════════════════
 
-# Sync the current account's token from Keychain to its snapshot file before
-# displaying usage — prevents showing stale/expired tokens as "—"
+# Sync the current account's token from credential store to its snapshot file
+# before displaying usage — prevents showing stale/expired tokens as "—"
 _sync_current_creds() {
-  [[ "$(uname)" != "Darwin" ]] && return
   local cur; cur=$(current_name)
   [[ -z "${cur}" ]] || ! account_exists "${cur}" && return
   local live; live=$(kc_read 2>/dev/null)
@@ -385,7 +394,7 @@ cmd_add() {
     "${PY}" -c "import json,sys; d=json.load(sys.stdin); print((d.get('claudeAiOauth') or {}).get('accessToken',''))" 2>/dev/null || echo "")
 
   if [[ -z "${kc_creds}" ]]; then
-    err "No credentials found in Keychain"
+    err "No credentials found after login"
     log "If login succeeded, run: ${B}relay save ${name}${R}"
     exit 1
   fi
@@ -410,13 +419,14 @@ cmd_save() {
   hdr "Save current account as: ${name}"
 
   local saved=0
-  if [[ "$(uname)" == "Darwin" ]]; then
-    local kc; kc=$(kc_read 2>/dev/null)
-    if [[ -n "${kc}" ]]; then
-      printf '%s' "${kc}" > "$(account_creds "${name}")"
-      chmod 600 "$(account_creds "${name}")"
-      ok "Saved from Keychain"; saved=1
+  local kc; kc=$(kc_read 2>/dev/null)
+  if [[ -n "${kc}" ]]; then
+    printf '%s' "${kc}" > "$(account_creds "${name}")"
+    chmod 600 "$(account_creds "${name}")"
+    if [[ "$(uname)" == "Darwin" ]]; then ok "Saved from Keychain"
+    else ok "Saved from ~/.claude/.credentials.json"
     fi
+    saved=1
   fi
   [[ ${saved} -eq 0 ]] && { err "No credentials found — log in first with: claude /login"; exit 1; }
 
@@ -560,7 +570,7 @@ cmd_help() {
   printf "  %-32s %s\n" "  relay sessions"           "show all sessions"
   printf "  %-32s %s\n" "  relay uninstall"          "remove relay and all account data"
   echo ""
-  printf "  ${D}switches the OAuth credential in macOS Keychain; sessions are shared${R}\n"
+  printf "  ${D}switches the OAuth credential (macOS Keychain / Linux ~/.claude/.credentials.json); sessions are shared${R}\n"
   printf "  ${D}after switching: claude -c to resume, claude --resume <id> for a specific session${R}\n\n"
 }
 
