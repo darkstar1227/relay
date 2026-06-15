@@ -128,11 +128,14 @@ require_claude() {
 # ══════════════════════════════════════════════════════════════════
 render_table() {
   "${PY}" - "$@" <<'EOF'
-import sys, os, json, glob, datetime, urllib.request
+import sys, os, json, glob, datetime, urllib.request, urllib.error, urllib.parse, platform, subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 mode, creds_dir, meta_dir, current = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 no_usage = '--no-usage' in sys.argv
+relay_dir = os.path.dirname(creds_dir)
+cache_file = os.path.join(relay_dir, 'usage_cache.json')
+CACHE_TTL = 120  # seconds
 
 R='\033[0m'; B='\033[1m'; D='\033[2m'
 CY='\033[36m'; GR='\033[32m'; YL='\033[33m'; RD='\033[31m'; MG='\033[35m'
@@ -165,17 +168,96 @@ def get_email(name):
     except Exception:
         return '—'
 
-def fetch(name):
+def update_live_creds(content):
+    if platform.system() == 'Darwin':
+        user = subprocess.run(['whoami'], capture_output=True, text=True).stdout.strip()
+        svc = 'Claude Code-credentials'
+        subprocess.run(['security', 'delete-generic-password', '-s', svc, '-a', user], capture_output=True)
+        subprocess.run(['security', 'add-generic-password', '-s', svc, '-a', user, '-w', content], capture_output=True)
+    else:
+        live = os.path.join(os.path.expanduser('~'), '.claude', '.credentials.json')
+        with open(live, 'w') as f: f.write(content)
+        os.chmod(live, 0o600)
+
+def try_refresh(name, cred_path):
     try:
-        d = json.load(open(os.path.join(creds_dir, name + '.json')))
-        tok = (d.get('claudeAiOauth') or {}).get('accessToken', '')
+        d = json.load(open(cred_path))
+        oauth = d.get('claudeAiOauth') or {}
+        refresh_tok = oauth.get('refreshToken', '')
+        if not refresh_tok:
+            return None
+        params = urllib.parse.urlencode({'grant_type': 'refresh_token', 'refresh_token': refresh_tok}).encode()
+        req = urllib.request.Request(
+            'https://api.anthropic.com/token',
+            data=params,
+            headers={'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'relay/2.0'})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            resp = json.loads(r.read())
+        oauth['accessToken'] = resp['access_token']
+        if 'refresh_token' in resp:
+            oauth['refreshToken'] = resp['refresh_token']
+        expires_in = resp.get('expires_in', 3600)
+        oauth['expiresAt'] = int(datetime.datetime.now(datetime.timezone.utc).timestamp() * 1000) + expires_in * 1000
+        d['claudeAiOauth'] = oauth
+        content = json.dumps(d)
+        with open(cred_path, 'w') as f: f.write(content)
+        os.chmod(cred_path, 0o600)
+        if name == current:
+            update_live_creds(content)
+        return oauth['accessToken']
+    except Exception:
+        return None
+
+_cache = None
+def load_cache():
+    global _cache
+    if _cache is not None:
+        return _cache
+    try:
+        _cache = json.load(open(cache_file))
+    except Exception:
+        _cache = {}
+    return _cache
+
+def save_cache(c):
+    try:
+        with open(cache_file, 'w') as f: json.dump(c, f)
+    except Exception:
+        pass
+
+def fetch(name):
+    cred_path = os.path.join(creds_dir, name + '.json')
+    try:
+        d = json.load(open(cred_path))
+        oauth = d.get('claudeAiOauth') or {}
+        tok = oauth.get('accessToken', '')
         if not tok:
             return name, None
+
+        # Short-circuit: token is locally known to be expired
+        expires_at_ms = oauth.get('expiresAt', 0)
+        now_ms = datetime.datetime.now(datetime.timezone.utc).timestamp() * 1000
+        if expires_at_ms and now_ms > expires_at_ms:
+            return name, 'expired'
+
+        # Check cache
+        c = load_cache()
+        entry = c.get(name)
+        if entry and now_ms / 1000 - entry.get('ts', 0) < CACHE_TTL:
+            return name, entry.get('data')
+
         req = urllib.request.Request(
             'https://api.anthropic.com/api/oauth/usage',
             headers={'Authorization': 'Bearer ' + tok, 'User-Agent': 'relay/2.0'})
         with urllib.request.urlopen(req, timeout=6) as r:
-            return name, json.loads(r.read())
+            data = json.loads(r.read())
+        c[name] = {'ts': now_ms / 1000, 'data': data}
+        save_cache(c)
+        return name, data
+    except urllib.error.HTTPError as e:
+        if e.code == 401:
+            return name, 'expired'
+        return name, None
     except Exception:
         return name, None
 
@@ -191,6 +273,7 @@ if not no_usage:
     sys.stderr.flush()
 
 def u5_str(d):
+    if d == 'expired': return f'{YL}⚠ token expired{R}'
     if not d: return '—'
     fh = d.get('five_hour') or {}
     u = int(fh.get('utilization', 0) or 0)
@@ -198,7 +281,8 @@ def u5_str(d):
     c = color(u)
     return f'{bar(u)} {c}{u:3d}%{R} {D}({t}){R}'
 
-def u7_str(d):
+def u7_str(d, name=''):
+    if d == 'expired': return f'{YL}relay refresh {name}{R}' if name else f'{YL}relay refresh <name>{R}'
     if not d: return '—'
     sd = d.get('seven_day') or {}
     u = sd.get('utilization')
@@ -231,11 +315,11 @@ else:
         email = get_email(name)
         d = usage.get(name)
         u5 = u5_str(d) if not no_usage else '—'
-        u7 = u7_str(d) if not no_usage else '—'
+        u7 = u7_str(d, name) if not no_usage else '—'
         # ANSI codes don't consume display width — pad manually for alignment
         print(f'  {marker} {D}{i:<2}{R}{ncol}{name:<12}{R} {email:<28} {u5:<52} {u7}')
     print()
-    n_warn = sum(1 for d in usage.values() if d and (d.get('five_hour') or {}).get('utilization', 0) >= 80)
+    n_warn = sum(1 for d in usage.values() if isinstance(d, dict) and (d.get('five_hour') or {}).get('utilization', 0) >= 80)
     if n_warn:
         print(f'  {RD}⚠ {n_warn} account(s) above 80% usage{R}')
 EOF
@@ -435,6 +519,43 @@ cmd_save() {
   ok "Account '${B}${name}${R}' saved  ${D}$(get_meta_email "${name}")${R}"
 }
 
+cmd_refresh() {
+  local name="${1:-}"
+  [[ -z "${name}" ]] && { err "usage: relay refresh <name>"; exit 1; }
+  account_exists "${name}" || { err "Account '${name}' not found"; exit 1; }
+  require_claude
+  hdr "Refresh account: ${name}"
+  warn "Complete the browser login then return to this terminal"
+  echo ""
+
+  local tok_before; tok_before=$(kc_read 2>/dev/null | \
+    "${PY}" -c "import json,sys; d=json.load(sys.stdin); print((d.get('claudeAiOauth') or {}).get('accessToken',''))" 2>/dev/null || echo "")
+
+  "${REAL_CLAUDE}" /login || true
+
+  local kc_creds tok_after
+  kc_creds=$(kc_read 2>/dev/null)
+  tok_after=$(printf '%s' "${kc_creds}" | \
+    "${PY}" -c "import json,sys; d=json.load(sys.stdin); print((d.get('claudeAiOauth') or {}).get('accessToken',''))" 2>/dev/null || echo "")
+
+  if [[ -z "${kc_creds}" ]]; then
+    err "No credentials found after login"
+    exit 1
+  fi
+
+  if [[ -n "${tok_before}" ]] && [[ "${tok_before}" == "${tok_after}" ]]; then
+    err "Login did not complete (token unchanged)"
+    warn "Run relay refresh from a regular Terminal — browser login is not available inside Claude Code"
+    exit 1
+  fi
+
+  printf '%s' "${kc_creds}" > "$(account_creds "${name}")"
+  chmod 600 "$(account_creds "${name}")"
+  save_meta_email "${name}"
+  echo "${name}" > "${CURRENT_FILE}"
+  ok "Account '${B}${name}${R}' refreshed  ${D}$(get_meta_email "${name}")${R}"
+}
+
 cmd_remove() {
   local name="${1:-}"
   [[ -z "${name}" ]] && { err "usage: relay remove <name>"; exit 1; }
@@ -624,6 +745,7 @@ cmd_help() {
   printf "  ${B}Account management${R}\n"
   printf "  %-32s %s\n" "  relay add <name>"         "add account via browser login"
   printf "  %-32s %s\n" "  relay add-force <name>"   "force re-login for existing account"
+  printf "  %-32s %s\n" "  relay refresh <name>"     "re-login to refresh an expired token"
   printf "  %-32s %s\n" "  relay save <name>"        "save current login state"
   printf "  %-32s %s\n" "  relay rename <old> <new>" "rename an account"
   printf "  %-32s %s\n" "  relay list"               "full list with weekly usage"
@@ -651,6 +773,7 @@ case "${CMD}" in
     [[ -n "${1:-}" ]] && rm -f "$(account_creds "$1")" "$(account_meta "$1")"
     cmd_add "$@" ;;
   save)             cmd_save "$@" ;;
+  refresh)          cmd_refresh "$@" ;;
   switch|sw|use)
     if [[ -z "${1:-}" ]]; then cmd_quick
     elif [[ "${1}" =~ ^[0-9]+$ ]]; then
