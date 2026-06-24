@@ -28,6 +28,20 @@ git push && git push --tags
 npm publish --access public
 ```
 
+**Every version bump must also:**
+1. Add an entry to the `## Changelog` section in `README.md` — format:
+   ```
+   ### vX.Y.Z — YYYY-MM-DD
+   - what changed (one bullet per meaningful change)
+   ```
+2. Create a GitHub release for the tag with the same release notes:
+   ```bash
+   gh release create vX.Y.Z --title "vX.Y.Z" --notes "$(cat <<'EOF'
+   - what changed
+   EOF
+   )"
+   ```
+
 ## Files
 
 - `relay` — main bash script (macOS/Linux)

@@ -218,3 +218,19 @@ Sessions live in `~/.claude/projects/` and are shared across all accounts — af
 | `relay.ps1` | Full PowerShell implementation |
 | `relay.cmd` | Thin CMD wrapper — delegates to `relay.ps1` |
 
+
+---
+
+## Changelog
+
+### v2.1.1 — 2026-06-24
+- Display current version and latest version at the end of `list`, `status`, `relay` (menu), `sessions`, and `help` commands
+- Background version check (24h cache) — non-blocking, never slows down output
+- `relay update` now detects original install method: uses `npm install -g` for npm installs, `git pull` for git clones, and direct GitHub download for bare script copies
+- `npm install -g` post-install script automatically patches `~/.bashrc`, `~/.zshrc`, `~/.profile`, and fish `config.fish` if the npm bin dir is missing from PATH
+
+### v2.1.0 — 2026-06-24
+- Upgraded GitHub Actions workflow to `actions/checkout@v6` and `actions/setup-node@v6` (Node 24 runtime, removes Node 20 deprecation warning)
+
+### v2.0.2 — 2026-06-23
+- Skip `npm install` during `relay update` when already on the latest version or when version check fails
