@@ -66,3 +66,7 @@ relay uninstall            # 完全移除 relay 及帳號資料
 
 - macOS（使用 Keychain）
 - 需要 `python3`、`claude` CLI
+
+## 授權
+
+MIT © [darkstar1227](https://github.com/darkstar1227)
