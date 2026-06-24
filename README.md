@@ -231,6 +231,7 @@ Sessions live in `~/.claude/projects/` and are shared across all accounts — af
 
 ### v2.1.2 — 2026-06-24
 - Improve autoswitch config wizard: 3-step flow with numbered account list, space-separated number input for order, visual chain preview (`work → personal → (cycle)`), and summary after save
+- `relay update` now writes the live-fetched version to cache immediately, so display commands reflect the latest version without waiting 24h
 
 ### v2.1.0 — 2026-06-24
 - Upgraded GitHub Actions workflow to `actions/checkout@v6` and `actions/setup-node@v6` (Node 24 runtime, removes Node 20 deprecation warning)
