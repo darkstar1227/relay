@@ -229,6 +229,11 @@ Sessions live in `~/.claude/projects/` and are shared across all accounts — af
 - `relay update` now detects original install method: uses `npm install -g` for npm installs, `git pull` for git clones, and direct GitHub download for bare script copies
 - `npm install -g` post-install script automatically patches `~/.bashrc`, `~/.zshrc`, `~/.profile`, and fish `config.fish` if the npm bin dir is missing from PATH
 
+### v2.1.3 — 2026-06-24
+- `relay autoswitch` with no subcommand: auto-routes to config wizard (first time) or status panel (already configured)
+- Autoswitch status and log panels now show version info and update notice at the bottom
+- Status panel shows available commands inline
+
 ### v2.1.2 — 2026-06-24
 - Improve autoswitch config wizard: 3-step flow with numbered account list, space-separated number input for order, visual chain preview (`work → personal → (cycle)`), and summary after save
 - `relay update` now writes the live-fetched version to cache immediately, so display commands reflect the latest version without waiting 24h
