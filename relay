@@ -1335,7 +1335,12 @@ PYEOF
     warn "Could not determine latest version — check your network"
     log "To update manually: ${CY}npm install -g @dst-justin/relay@latest${R}"
     return 1
-  elif [[ "${current}" == "${latest}" ]]; then
+  fi
+
+  # Refresh cache with this live result so display commands reflect it immediately
+  printf '%s:%s' "$(date +%s)" "${latest}" > "${UPDATE_CACHE}" 2>/dev/null || true
+
+  if [[ "${current}" == "${latest}" ]]; then
     ok "Already up to date (${current})"; return 0
   else
     log "Latest available: ${B}${latest}${R}"
