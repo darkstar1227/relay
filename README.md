@@ -243,3 +243,7 @@ Sessions live in `~/.claude/projects/` and are shared across all accounts — af
 
 ### v2.0.2 — 2026-06-23
 - Skip `npm install` during `relay update` when already on the latest version or when version check fails
+
+## License
+
+MIT © [darkstar1227](https://github.com/darkstar1227)
