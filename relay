@@ -914,32 +914,38 @@ cmd_autoswitch_config() {
   printf "  ${D}When an account hits its threshold, relay switches to the next one in order.${R}\n\n"
   local i=1
   for acct in "${accounts[@]}"; do
-    printf "    ${D}%d.${R} %s\n" "${i}" "${acct}"
+    printf "    ${D}%d${R}  %s\n" "${i}" "${acct}"
     i=$((i+1))
   done
-  local default_order; default_order=$(IFS=','; echo "${accounts[*]}")
   echo ""
-  printf "  Enter order by name or number, comma-separated\n"
-  printf "  ${D}[Enter = use default: ${CY}%s${D}]:${R} " "${default_order}"
-  read -r order_input
-  [[ -z "${order_input}" ]] && order_input="${default_order}"
+  printf "  ${D}Type numbers in the order you want  (e.g. ${CY}2 1${D}  or just Enter to keep the order above):${R}\n"
+  printf "  > "; read -r order_input
 
-  # resolve numbers to names
+  # resolve numbers (space or comma) to names; empty = default order
   local order_str; order_str=$(echo "${order_input}" | "${PY}" - "${accounts[@]}" <<'PYEOF'
-import sys
-tokens = sys.stdin.read().strip().split(',')
+import sys, re
+raw = sys.stdin.read().strip()
 accts = sys.argv[1:]
-result = []
-for t in tokens:
-    t = t.strip()
-    if t.isdigit():
-        idx = int(t) - 1
-        if 0 <= idx < len(accts): result.append(accts[idx])
-    elif t:
-        result.append(t)
-print(','.join(result))
+if not raw:
+    print(','.join(accts))
+else:
+    tokens = re.split(r'[\s,]+', raw)
+    result = []
+    for t in tokens:
+        t = t.strip()
+        if t.isdigit():
+            idx = int(t) - 1
+            if 0 <= idx < len(accts): result.append(accts[idx])
+        elif t:
+            result.append(t)
+    print(','.join(result))
 PYEOF
 )
+  # show resolved order as a visual chain
+  local chain; chain=$(echo "${order_str}" | "${PY}" -c "
+import sys; names=sys.stdin.read().strip().split(',')
+print(' → '.join(names) + ' → (cycle)')")
+  printf "  ${D}Order: ${CY}%s${R}\n" "${chain}"
 
   # ── Step 2: thresholds ────────────────────────────────────────
   echo ""
