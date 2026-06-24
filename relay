@@ -1237,12 +1237,18 @@ PYEOF
 }
 
 _show_update_notice() {
-  [[ -f "${UPDATE_CACHE}" ]] || return 0
-  local cached; cached=$(cat "${UPDATE_CACHE}" 2>/dev/null)
-  local latest="${cached#*:}"
   local current; current=$(_read_version)
-  [[ -n "${latest}" && "${latest}" != "${current}" ]] || return 0
-  printf "\n  ${D}relay ${B}${latest}${R}${D} is available — run ${CY}relay update${R}${D} to install${R}\n"
+  local latest=""
+  if [[ -f "${UPDATE_CACHE}" ]]; then
+    local cached; cached=$(cat "${UPDATE_CACHE}" 2>/dev/null)
+    latest="${cached#*:}"
+  fi
+  if [[ -n "${latest}" && "${latest}" != "${current}" ]]; then
+    printf "\n  ${D}relay version: ${B}${current}${R}${D} → ${CY}${B}${latest}${R}${D} available — run ${CY}relay update${R}${D} to install${R}\n"
+  else
+    local ver_display="${latest:-${current}}"
+    printf "\n  ${D}relay version: ${B}${ver_display}${R}${D} (up to date)${R}\n"
+  fi
 }
 
 # Detect how relay was originally installed:
