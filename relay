@@ -986,7 +986,7 @@ print(' → '.join(names) + ' → (cycle)')")
   echo ""
   ok "Config saved to ${cfg_file}"
   echo ""
-  "${PY}" -c "
+  "${PY}" - "${cfg_file}" <<'PYEOF'
 import json, sys
 cfg = json.load(open(sys.argv[1]))
 R='\033[0m'; B='\033[1m'; D='\033[2m'; CY='\033[36m'
@@ -994,8 +994,9 @@ for i, name in enumerate(cfg['order'], 1):
     thr = cfg['thresholds'].get(name, '?')
     print(f'    {D}{i}.{R} {name:<14} → switch at {CY}{thr}%{R}')
 p = cfg['poll']
-print(f\"\n    {D}polling: {p[\"low_minutes\"]}min normal / {p[\"high_minutes\"]}min fast (fast above {p[\"high_threshold\"]}%){R}\")
-" "${cfg_file}"
+lo, hi, thr = p['low_minutes'], p['high_minutes'], p['high_threshold']
+print(f'\n    {D}polling: {lo}min normal / {hi}min fast (fast above {thr}%){R}')
+PYEOF
   echo ""
   log "Run ${CY}relay autoswitch start${R} to activate"
 }
@@ -1094,6 +1095,7 @@ cmd_autoswitch_stop() {
 }
 
 cmd_autoswitch_status() {
+  _check_update_bg
   hdr "autoswitch — status"
 
   local pid; pid=$(cat "${RELAY_DIR}/autoswitch.lock" 2>/dev/null || echo "")
@@ -1106,6 +1108,7 @@ cmd_autoswitch_status() {
   local cfg="${RELAY_DIR}/autoswitch.json"
   if [[ ! -f "${cfg}" ]]; then
     warn "No config. Run: relay autoswitch config"
+    _show_update_notice
     return 0
   fi
 
@@ -1173,12 +1176,18 @@ except: pass
 EOF
 
   echo ""
-  log "Run ${CY}relay autoswitch log${R} to see full history"
+  printf "  ${D}────────────────────────────────────────${R}\n"
+  printf "  %-34s %s\n" "  ${CY}relay autoswitch start${R}"  "start daemon"
+  printf "  %-34s %s\n" "  ${CY}relay autoswitch stop${R}"   "stop daemon"
+  printf "  %-34s %s\n" "  ${CY}relay autoswitch config${R}" "edit settings"
+  printf "  %-34s %s\n" "  ${CY}relay autoswitch log${R}"    "switch history"
+  _show_update_notice
 }
 
 cmd_autoswitch_log() {
+  _check_update_bg
   local log_file="${RELAY_DIR}/autoswitch.log"
-  [[ -f "${log_file}" ]] || { warn "No log yet"; return 0; }
+  [[ -f "${log_file}" ]] || { warn "No log yet"; _show_update_notice; return 0; }
 
   hdr "autoswitch — log (last 20 events)"
   "${PY}" - "${log_file}" <<'EOF'
@@ -1201,6 +1210,7 @@ for line in lines[-20:]:
             print(f'  {D}{ts}{R}  {D}daemon start{R}')
     except: pass
 EOF
+  _show_update_notice
 }
 
 cmd_autoswitch() {
@@ -1212,13 +1222,11 @@ cmd_autoswitch() {
     status)  cmd_autoswitch_status ;;
     log)     cmd_autoswitch_log ;;
     *)
-      hdr "autoswitch"
-      printf "  %-32s %s\n" "  relay autoswitch config"  "interactive setup wizard"
-      printf "  %-32s %s\n" "  relay autoswitch start"   "install and start daemon"
-      printf "  %-32s %s\n" "  relay autoswitch stop"    "stop and remove daemon"
-      printf "  %-32s %s\n" "  relay autoswitch status"  "show daemon state + config"
-      printf "  %-32s %s\n" "  relay autoswitch log"     "show recent switch history"
-      echo ""
+      if [[ ! -f "${RELAY_DIR}/autoswitch.json" ]]; then
+        cmd_autoswitch_config
+      else
+        cmd_autoswitch_status
+      fi
       ;;
   esac
 }
