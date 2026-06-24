@@ -604,15 +604,16 @@ cmd_install() {
 
   hdr "Install relay"
 
-  if ln -sf "${script_path}" "${target}" 2>/dev/null; then
+  if rm -f "${target}" 2>/dev/null && cp "${script_path}" "${target}" 2>/dev/null && chmod 755 "${target}" 2>/dev/null; then
     ok "Installed at ${target}"
     log "Run ${CY}relay help${R} to verify"
-  elif sudo ln -sf "${script_path}" "${target}" 2>/dev/null; then
+  elif sudo rm -f "${target}" 2>/dev/null && sudo cp "${script_path}" "${target}" 2>/dev/null && sudo chmod 755 "${target}" 2>/dev/null; then
     ok "Installed at ${target} (via sudo)"
   else
     warn "Cannot write to /usr/local/bin — installing to ~/bin instead"
     mkdir -p "${HOME}/bin"
-    ln -sf "${script_path}" "${HOME}/bin/relay"
+    rm -f "${HOME}/bin/relay" 2>/dev/null
+    cp "${script_path}" "${HOME}/bin/relay" && chmod 755 "${HOME}/bin/relay"
     ok "Installed at ${HOME}/bin/relay"
     echo ""
     warn "Make sure ~/bin is in your PATH (.zshrc / .bashrc):"

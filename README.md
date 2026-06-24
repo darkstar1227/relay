@@ -20,25 +20,37 @@ A lightweight CLI tool for switching between multiple Claude Code accounts insta
 
 ## Installation
 
-### npm (all platforms — recommended)
+### npx (no install required)
+
+Run once without installing anything permanently:
+
+```bash
+npx @dst-justin/relay install
+```
+
+This copies the `relay` script to `/usr/local/bin/relay` (or `~/bin/relay` as fallback). After that, use `relay` directly.
+
+---
+
+### npm (global install — recommended)
 
 Requires Node.js 16+. Installs the `relay` command globally:
 
 ```bash
-npm install -g claude-relay
+npm install -g @dst-justin/relay
 ```
 
 To update later:
 
 ```bash
-npm update -g claude-relay
+npm update -g @dst-justin/relay
 # or from inside relay:
 relay update
 ```
 
 ---
 
-### macOS / Linux / WSL (manual)
+### macOS / Linux / WSL (manual, no Node.js)
 
 ```bash
 git clone https://github.com/darkstar1227/relay.git
@@ -47,11 +59,11 @@ cd relay
 # Make the script executable
 chmod +x relay
 
-# Install (creates a symlink in /usr/local/bin)
+# Install (copies script to /usr/local/bin)
 ./relay install
 ```
 
-This creates a symlink at `/usr/local/bin/relay` (falls back to `~/bin/relay` if permissions are restricted).
+This copies the script to `/usr/local/bin/relay` (falls back to `~/bin/relay` if permissions are restricted).
 
 #### Verify permissions
 
