@@ -908,47 +908,68 @@ cmd_autoswitch_config() {
     exit 1
   fi
 
+  # ── Step 1: switch order ───────────────────────────────────────
   echo ""
-  printf "  Accounts found: ${CY}%s${R}\n\n" "$(IFS=', '; echo "${accounts[*]}")"
-
-  printf "  ${B}Switch order${R} (comma-separated, only listed accounts join autoswitch):\n"
-  printf "  > "; read -r order_input
-  local order_str; order_str=$(echo "${order_input}" | "${PY}" -c "
-import sys,re
-raw=sys.stdin.read().strip()
-names=[x.strip() for x in raw.split(',') if x.strip()]
-print(','.join(names))")
-
+  printf "  ${B}Step 1 / 3 — Switch order${R}\n"
+  printf "  ${D}When an account hits its threshold, relay switches to the next one in order.${R}\n\n"
+  local i=1
+  for acct in "${accounts[@]}"; do
+    printf "    ${D}%d.${R} %s\n" "${i}" "${acct}"
+    i=$((i+1))
+  done
+  local default_order; default_order=$(IFS=','; echo "${accounts[*]}")
   echo ""
-  printf "  ${B}Thresholds${R} (press enter to skip account — it won't join autoswitch):\n"
+  printf "  Enter order by name or number, comma-separated\n"
+  printf "  ${D}[Enter = use default: ${CY}%s${D}]:${R} " "${default_order}"
+  read -r order_input
+  [[ -z "${order_input}" ]] && order_input="${default_order}"
+
+  # resolve numbers to names
+  local order_str; order_str=$(echo "${order_input}" | "${PY}" - "${accounts[@]}" <<'PYEOF'
+import sys
+tokens = sys.stdin.read().strip().split(',')
+accts = sys.argv[1:]
+result = []
+for t in tokens:
+    t = t.strip()
+    if t.isdigit():
+        idx = int(t) - 1
+        if 0 <= idx < len(accts): result.append(accts[idx])
+    elif t:
+        result.append(t)
+print(','.join(result))
+PYEOF
+)
+
+  # ── Step 2: thresholds ────────────────────────────────────────
+  echo ""
+  printf "  ${B}Step 2 / 3 — Thresholds${R}\n"
+  printf "  ${D}Autoswitch triggers when an account's 5-hr usage exceeds this %%.${R}\n"
+  printf "  ${D}Enter a number (e.g. 70), or press Enter for default 80%%.${R}\n\n"
+
   local thresholds_json="{"
   local order_json="["
-  local first_order=1
-  local first_thresh=1
+  local first=1
   IFS=',' read -ra order_arr <<< "${order_str}"
   for acct in "${order_arr[@]}"; do
-    printf "  %s threshold %% [default 80]: " "${acct}"
+    printf "  ${CY}%s${R} threshold [80%%]: " "${acct}"
     read -r val
-    if [[ -z "${val}" ]]; then
-      continue
-    fi
-    [[ ${first_order} -eq 0 ]] && order_json+=","
+    [[ -z "${val}" ]] && val="80"
+    [[ ${first} -eq 0 ]] && { order_json+=","; thresholds_json+=","; }
     order_json+="\"${acct}\""
-    first_order=0
-    [[ ${first_thresh} -eq 0 ]] && thresholds_json+=","
     thresholds_json+="\"${acct}\":${val}"
-    first_thresh=0
+    first=0
   done
   order_json+="]"
   thresholds_json+="}"
 
+  # ── Step 3: poll interval ─────────────────────────────────────
   echo ""
-  printf "  ${B}Poll interval${R} — low usage (minutes) [default 10]: "
-  read -r low_min; low_min="${low_min:-10}"
-  printf "  ${B}Poll interval${R} — high usage (minutes) [default 2]: "
-  read -r high_min; high_min="${high_min:-2}"
-  printf "  ${B}High usage starts at${R} %% [default 50]: "
-  read -r high_thr; high_thr="${high_thr:-50}"
+  printf "  ${B}Step 3 / 3 — Check interval${R}\n"
+  printf "  ${D}How often the daemon checks usage. Switches to faster polling near the threshold.${R}\n\n"
+  printf "  Normal check every N minutes [10]: "; read -r low_min; low_min="${low_min:-10}"
+  printf "  Fast check every N minutes   [2]:  "; read -r high_min; high_min="${high_min:-2}"
+  printf "  Switch to fast polling at    [50%%]: "; read -r high_thr; high_thr="${high_thr:-50}"
 
   local cfg_file="${RELAY_DIR}/autoswitch.json"
   printf '{"order":%s,"thresholds":%s,"poll":{"low_minutes":%s,"high_minutes":%s,"high_threshold":%s}}' \
@@ -957,7 +978,19 @@ print(','.join(names))")
     > "${cfg_file}"
 
   echo ""
-  ok "Saved to ${cfg_file}"
+  ok "Config saved to ${cfg_file}"
+  echo ""
+  "${PY}" -c "
+import json, sys
+cfg = json.load(open(sys.argv[1]))
+R='\033[0m'; B='\033[1m'; D='\033[2m'; CY='\033[36m'
+for i, name in enumerate(cfg['order'], 1):
+    thr = cfg['thresholds'].get(name, '?')
+    print(f'    {D}{i}.{R} {name:<14} → switch at {CY}{thr}%{R}')
+p = cfg['poll']
+print(f\"\n    {D}polling: {p[\"low_minutes\"]}min normal / {p[\"high_minutes\"]}min fast (fast above {p[\"high_threshold\"]}%){R}\")
+" "${cfg_file}"
+  echo ""
   log "Run ${CY}relay autoswitch start${R} to activate"
 }
 
