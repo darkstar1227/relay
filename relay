@@ -353,6 +353,9 @@ do_switch() {
   local email; email=$(get_meta_email "${name}")
   printf "\n  ${GR}${B}✓ switched → %s${R}  ${D}%s${R}\n" "${name}" "${email}"
   printf "  ${D}Restart claude to apply. Resume last session: ${CY}claude -c${R}\n\n"
+
+  # ponytail: sentinel lets autoswitch daemon skip this account until threshold hit
+  printf '{"account":"%s","ts":%s}' "${name}" "$(date +%s)" > "${RELAY_DIR}/manual_switch"
 }
 
 # ══════════════════════════════════════════════════════════════════
