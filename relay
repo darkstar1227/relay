@@ -12,6 +12,7 @@ RELAY_DIR="${HOME}/.claude-relay"
 CREDS_STORE="${RELAY_DIR}/credentials"
 META_STORE="${RELAY_DIR}/meta"
 CURRENT_FILE="${RELAY_DIR}/current"
+UPDATE_CACHE="${RELAY_DIR}/.update_cache"
 CLAUDE_DIR="${HOME}/.claude"
 CLAUDE_JSON="${HOME}/.claude.json"
 REAL_CLAUDE=$(command -v claude 2>/dev/null || echo "")
@@ -371,14 +372,21 @@ _sync_current_creds() {
   [[ -n "${live}" ]] && printf '%s' "${live}" > "$(account_creds "${cur}")"
 }
 
-cmd_quick() { _sync_current_creds; render_table quick "${CREDS_STORE}" "${META_STORE}" "$(current_name)" "$@"; }
+cmd_quick() {
+  _check_update_bg
+  _sync_current_creds
+  render_table quick "${CREDS_STORE}" "${META_STORE}" "$(current_name)" "$@"
+  _show_update_notice
+}
 
 cmd_list() {
+  _check_update_bg
   hdr "Account List"
   _sync_current_creds
   render_table full "${CREDS_STORE}" "${META_STORE}" "$(current_name)" "$@"
   echo ""
   ok "Inside Claude Code: ${CY}!relay <index>${R} to switch"
+  _show_update_notice
 }
 
 cmd_status() {
@@ -450,6 +458,8 @@ EOF
   [[ -d "${CLAUDE_DIR}/projects" ]] && \
     n=$(find "${CLAUDE_DIR}/projects" -name "*.jsonl" 2>/dev/null | wc -l | tr -d ' ')
   printf "\n  ${B}Sessions:${R} %s (shared across all accounts in ~/.claude/projects/)\n" "${n}"
+  _check_update_bg
+  _show_update_notice
 }
 
 cmd_add() {
@@ -599,6 +609,8 @@ print()
 print(f'  {total} session(s)' if total else '  No sessions found')
 EOF
   log "${CY}claude -c${R} resume last  ${D}|${R}  ${CY}claude -r${R} pick one  ${D}|${R}  ${CY}claude --resume <id>${R}"
+  _check_update_bg
+  _show_update_notice
 }
 
 cmd_install() {
@@ -1190,6 +1202,62 @@ cmd_version() {
   printf "relay %s\n" "$(_read_version)"
 }
 
+# ── Update notification helpers ───────────────────────────────────────────────
+# Cache format: "<epoch>:<version>"  TTL = 24h
+_check_update_bg() {
+  (
+    local ttl=86400
+    if [[ -f "${UPDATE_CACHE}" ]]; then
+      local cached; cached=$(cat "${UPDATE_CACHE}" 2>/dev/null)
+      local ts="${cached%%:*}"
+      local now; now=$(date +%s)
+      [[ $(( now - ts )) -lt ${ttl} ]] && exit 0
+    fi
+    local ver
+    ver=$("${PY}" - 2>/dev/null <<'PYEOF'
+import urllib.request, json, sys
+def fetch(url, h={}):
+    r = urllib.request.Request(url, headers=h)
+    with urllib.request.urlopen(r, timeout=6) as resp:
+        return json.loads(resp.read())
+try:
+    d = fetch('https://api.github.com/repos/darkstar1227/relay/releases/latest',
+              {'User-Agent': 'relay-update'})
+    print(d['tag_name'].lstrip('v')); sys.exit(0)
+except Exception: pass
+try:
+    d = fetch('https://registry.npmjs.org/@dst-justin%2frelay/latest')
+    print(d['version'])
+except Exception: sys.exit(1)
+PYEOF
+)
+    [[ -n "${ver}" ]] && printf '%s:%s' "$(date +%s)" "${ver}" > "${UPDATE_CACHE}"
+  ) >/dev/null 2>&1 &
+  disown 2>/dev/null || true
+}
+
+_show_update_notice() {
+  [[ -f "${UPDATE_CACHE}" ]] || return 0
+  local cached; cached=$(cat "${UPDATE_CACHE}" 2>/dev/null)
+  local latest="${cached#*:}"
+  local current; current=$(_read_version)
+  [[ -n "${latest}" && "${latest}" != "${current}" ]] || return 0
+  printf "\n  ${D}relay ${B}${latest}${R}${D} is available — run ${CY}relay update${R}${D} to install${R}\n"
+}
+
+# Detect how relay was originally installed:
+#   npm    — package.json present in script dir (npm unpacks the full package)
+#   git    — .git dir present in script dir
+#   direct — bare script copy (no package.json, no .git)
+_detect_install_method() {
+  local d; d=$(_script_dir)
+  # .git check first: git clone has both .git AND package.json; npm publish strips .git
+  if [[ -d "${d}/.git" ]];      then echo "git"
+  elif [[ -f "${d}/package.json" ]]; then echo "npm"
+  else                                  echo "direct"
+  fi
+}
+
 cmd_update() {
   hdr "Update relay"
 
@@ -1229,18 +1297,43 @@ PYEOF
   fi
 
   local relay_dir; relay_dir=$(_script_dir)
-  local npm_cmd; npm_cmd=$(command -v npm 2>/dev/null)
-  if [[ -n "${npm_cmd}" ]]; then
-    log "Installing via npm..."
-    npm install -g @dst-justin/relay@latest
-    ok "Updated to $(_read_version)"
-  elif [[ -d "${relay_dir}/.git" ]]; then
-    log "npm not found — updating via git..."
-    git -C "${relay_dir}" pull
-  else
-    err "Cannot update: npm not found and no .git directory"
-    log "Install via npm: ${CY}npm install -g @dst-justin/relay@latest${R}"
-  fi
+  local method; method=$(_detect_install_method)
+
+  case "${method}" in
+    npm)
+      local npm_cmd; npm_cmd=$(command -v npm 2>/dev/null)
+      if [[ -n "${npm_cmd}" ]]; then
+        log "Updating via npm (original install method)..."
+        npm install -g @dst-justin/relay@latest
+        ok "Updated to $(_read_version)"
+      else
+        err "npm not found — reinstall npm and retry"
+        log "Or update manually: ${CY}npm install -g @dst-justin/relay@latest${R}"
+      fi ;;
+    git)
+      log "Updating via git pull (original install method)..."
+      git -C "${relay_dir}" pull ;;
+    direct)
+      log "Updating via direct download (original install method)..."
+      local script_path; script_path=$(readlink -f "$0" 2>/dev/null || echo "$0")
+      "${PY}" - "${script_path}" "${latest}" <<'PYEOF'
+import urllib.request, sys, os, stat
+script_path, version = sys.argv[1], sys.argv[2]
+url = f'https://raw.githubusercontent.com/darkstar1227/relay/v{version}/relay'
+try:
+    with urllib.request.urlopen(url, timeout=15) as r:
+        content = r.read()
+    tmp = script_path + '.tmp'
+    with open(tmp, 'wb') as f: f.write(content)
+    os.chmod(tmp, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
+    os.replace(tmp, script_path)
+except Exception as e:
+    print(f'  download failed: {e}', file=sys.stderr); sys.exit(1)
+PYEOF
+      ok "Updated ${script_path} to ${latest}" ;;
+  esac
+  # Invalidate update cache so next display shows fresh state
+  rm -f "${UPDATE_CACHE}" 2>/dev/null || true
 }
 
 cmd_uninstall() {
@@ -1297,6 +1390,8 @@ cmd_help() {
   echo ""
   printf "  ${D}switches the OAuth credential (macOS Keychain / Linux ~/.claude/.credentials.json); sessions are shared${R}\n"
   printf "  ${D}after switching: claude -c to resume, claude --resume <id> for a specific session${R}\n\n"
+  _check_update_bg
+  _show_update_notice
 }
 
 # ══════════════════════════════════════════════════════════════════
