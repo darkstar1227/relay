@@ -1,6 +1,6 @@
 {
   "name": "@dst-justin/relay",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "Multi-account switcher for Claude Code — instant credential swap across macOS, Linux, and Windows",
   "bin": {
     "relay": "./relay.js"
@@ -10,10 +10,11 @@
     "relay.js",
     "relay.ps1",
     "relay.cmd",
+    "postinstall.js",
     "README.md"
   ],
   "scripts": {
-    "postinstall": "node -e \"if(process.platform!=='win32'){try{require('fs').chmodSync(require('path').join(__dirname,'relay'),'755')}catch(_){}}\""
+    "postinstall": "node -e \"if(process.platform!=='win32'){try{require('fs').chmodSync(require('path').join(__dirname,'relay'),'755')}catch(_){}}\" && node postinstall.js"
   },
   "engines": {
     "node": ">=16"
