@@ -698,14 +698,14 @@ PYEOF
   local npm_cmd; npm_cmd=$(command -v npm 2>/dev/null)
   if [[ -n "${npm_cmd}" ]]; then
     log "Installing via npm..."
-    npm install -g claude-relay@latest
+    npm install -g @dst-justin/relay@latest
     ok "Updated to $(_read_version)"
   elif [[ -d "${relay_dir}/.git" ]]; then
     log "npm not found — updating via git..."
     git -C "${relay_dir}" pull
   else
     err "Cannot update: npm not found and no .git directory"
-    log "Install via npm: ${CY}npm install -g claude-relay@latest${R}"
+    log "Install via npm: ${CY}npm install -g @dst-justin/relay@latest${R}"
   fi
 }
 
