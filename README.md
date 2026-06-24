@@ -161,6 +161,38 @@ Prefix commands with `!` to run them inline:
 | `relay version` | Show current version |
 | `relay update` | Check GitHub releases and update to the latest version |
 | `relay uninstall` | Remove relay and all account data (macOS/Linux only) |
+| `relay autoswitch config` | Interactive setup wizard |
+| `relay autoswitch start` | Install and start background daemon |
+| `relay autoswitch stop` | Stop and remove daemon |
+| `relay autoswitch status` | Daemon state and per-account thresholds |
+| `relay autoswitch log` | Recent auto-switch history |
+
+## Autoswitch
+
+relay can automatically switch accounts when a 5-hour usage threshold is hit.
+
+**Setup:**
+
+```bash
+relay autoswitch config   # interactive wizard
+relay autoswitch start    # install daemon (launchd / systemd / cron)
+relay autoswitch status   # verify it's running
+```
+
+**Config file** (`~/.claude-relay/autoswitch.json`):
+
+```json
+{
+  "order": ["work", "personal", "backup"],
+  "thresholds": { "work": 70, "personal": 80 },
+  "poll": { "low_minutes": 10, "high_minutes": 2, "high_threshold": 50 }
+}
+```
+
+- Only accounts listed in `order` with a `thresholds` entry participate.
+- No config file = autoswitch disabled entirely.
+- Manual switches (`!relay work`) are respected until that account hits its threshold.
+- If all accounts are over threshold, relay switches to the least-used one.
 
 ## How It Works
 

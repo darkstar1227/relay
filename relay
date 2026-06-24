@@ -651,6 +651,527 @@ cmd_rename() {
   ok "Renamed '${B}${old}${R}' → '${B}${new}${R}'"
 }
 
+AUTOSWITCH_DAEMON="${RELAY_DIR}/autoswitch-daemon.py"
+AUTOSWITCH_PLIST="${HOME}/Library/LaunchAgents/com.relay.autoswitch.plist"
+AUTOSWITCH_SERVICE="${HOME}/.config/systemd/user/relay-autoswitch.service"
+
+_extract_daemon() {
+  cat > "${AUTOSWITCH_DAEMON}" <<'DAEMON_EOF'
+#!/usr/bin/env python3
+"""relay autoswitch daemon — runs in background, switches accounts by usage threshold."""
+import json, os, sys, time, datetime, urllib.request, urllib.error, platform, subprocess, signal
+
+RELAY_DIR    = os.path.expanduser('~/.claude-relay')
+CONFIG_FILE  = os.path.join(RELAY_DIR, 'autoswitch.json')
+LOCK_FILE    = os.path.join(RELAY_DIR, 'autoswitch.lock')
+LOG_FILE     = os.path.join(RELAY_DIR, 'autoswitch.log')
+MANUAL_FILE  = os.path.join(RELAY_DIR, 'manual_switch')
+CURRENT_FILE = os.path.join(RELAY_DIR, 'current')
+CREDS_DIR    = os.path.join(RELAY_DIR, 'credentials')
+CACHE_FILE   = os.path.join(RELAY_DIR, 'usage_cache.json')
+CACHE_TTL    = 120  # seconds — same as render_table
+
+# ── lock ──────────────────────────────────────────────────────────
+def write_lock():
+    with open(LOCK_FILE, 'w') as f: f.write(str(os.getpid()))
+
+def remove_lock():
+    try: os.remove(LOCK_FILE)
+    except: pass
+
+def lock_pid():
+    try: return int(open(LOCK_FILE).read().strip())
+    except: return None
+
+def is_running(pid):
+    try: os.kill(pid, 0); return True
+    except: return False
+
+def check_single_instance():
+    pid = lock_pid()
+    if pid and is_running(pid):
+        print(f'daemon already running (pid {pid})', file=sys.stderr); sys.exit(1)
+    write_lock()
+
+signal.signal(signal.SIGTERM, lambda *_: (remove_lock(), sys.exit(0)))
+
+# ── log ───────────────────────────────────────────────────────────
+def rotate_log():
+    """Keep last 200 lines if log exceeds 500 lines. Called once at startup."""
+    try:
+        lines = open(LOG_FILE).readlines()
+        if len(lines) > 500:
+            with open(LOG_FILE, 'w') as f: f.writelines(lines[-200:])
+    except: pass
+
+def log_event(event, **kwargs):
+    entry = {'ts': int(time.time()), 'event': event, **kwargs}
+    with open(LOG_FILE, 'a') as f: f.write(json.dumps(entry) + '\n')
+
+# ── notify ────────────────────────────────────────────────────────
+def notify(title, msg):
+    try:
+        p = platform.system()
+        if p == 'Darwin':
+            subprocess.run(['osascript', '-e',
+                f'display notification "{msg}" with title "{title}"'],
+                capture_output=True, timeout=3)
+        elif p == 'Linux':
+            subprocess.run(['notify-send', title, msg],
+                capture_output=True, timeout=3)
+        # Windows: called from .ps1 wrapper, not this script
+    except: pass
+
+# ── credentials ───────────────────────────────────────────────────
+def kc_read():
+    p = platform.system()
+    if p == 'Darwin':
+        r = subprocess.run(['security', 'find-generic-password',
+            '-s', 'Claude Code-credentials', '-a', subprocess.run(
+                ['whoami'], capture_output=True, text=True).stdout.strip(), '-w'],
+            capture_output=True, text=True)
+        return r.stdout.strip() if r.returncode == 0 else ''
+    else:
+        live = os.path.join(os.path.expanduser('~'), '.claude', '.credentials.json')
+        try: return open(live).read()
+        except: return ''
+
+def kc_write(content):
+    p = platform.system()
+    if p == 'Darwin':
+        user = subprocess.run(['whoami'], capture_output=True, text=True).stdout.strip()
+        svc = 'Claude Code-credentials'
+        subprocess.run(['security', 'delete-generic-password', '-s', svc, '-a', user], capture_output=True)
+        subprocess.run(['security', 'add-generic-password', '-s', svc, '-a', user, '-w', content], capture_output=True)
+    else:
+        live = os.path.join(os.path.expanduser('~'), '.claude', '.credentials.json')
+        with open(live, 'w') as f: f.write(content)
+        os.chmod(live, 0o600)
+
+def do_switch(name):
+    cred = os.path.join(CREDS_DIR, name + '.json')
+    current = open(CURRENT_FILE).read().strip() if os.path.exists(CURRENT_FILE) else ''
+    if current and os.path.exists(os.path.join(CREDS_DIR, current + '.json')):
+        live = kc_read()
+        if live:
+            with open(os.path.join(CREDS_DIR, current + '.json'), 'w') as f: f.write(live)
+    with open(CURRENT_FILE, 'w') as f: f.write(name)
+    content = open(cred).read()
+    kc_write(content)
+
+# ── usage fetch ───────────────────────────────────────────────────
+def load_cache():
+    try: return json.load(open(CACHE_FILE))
+    except: return {}
+
+def save_cache(c):
+    try:
+        with open(CACHE_FILE, 'w') as f: json.dump(c, f)
+    except: pass
+
+def fetch_usage(name):
+    cred_path = os.path.join(CREDS_DIR, name + '.json')
+    try:
+        d = json.load(open(cred_path))
+        oauth = d.get('claudeAiOauth') or {}
+        tok = oauth.get('accessToken', '')
+        if not tok: return None
+
+        expires_at_ms = oauth.get('expiresAt', 0)
+        now_ms = time.time() * 1000
+        if expires_at_ms and now_ms > expires_at_ms: return 'expired'
+
+        c = load_cache()
+        entry = c.get(name)
+        if entry and time.time() - entry.get('ts', 0) < CACHE_TTL:
+            return entry.get('data')
+
+        req = urllib.request.Request(
+            'https://api.anthropic.com/api/oauth/usage',
+            headers={'Authorization': 'Bearer ' + tok, 'User-Agent': 'relay/2.0'})
+        with urllib.request.urlopen(req, timeout=6) as r:
+            data = json.loads(r.read())
+        c[name] = {'ts': time.time(), 'data': data}
+        save_cache(c)
+        return data
+    except urllib.error.HTTPError as e:
+        return 'expired' if e.code == 401 else None
+    except: return None
+
+def get_utilization(usage_data):
+    """Return 5hr utilization % or None."""
+    if not isinstance(usage_data, dict): return None
+    fh = usage_data.get('five_hour') or {}
+    u = fh.get('utilization')
+    return int(u) if u is not None else None
+
+# ── manual switch protection ───────────────────────────────────────
+def get_manual_switch():
+    try: return json.load(open(MANUAL_FILE))
+    except: return None
+
+def clear_manual_switch():
+    try: os.remove(MANUAL_FILE)
+    except: pass
+
+# ── main loop ─────────────────────────────────────────────────────
+def load_config():
+    try: return json.load(open(CONFIG_FILE))
+    except: return None
+
+def main():
+    check_single_instance()
+    rotate_log()
+    log_event('start')
+
+    while True:
+        cfg = load_config()
+        if not cfg:
+            time.sleep(60); continue
+
+        order = cfg.get('order', [])
+        thresholds = cfg.get('thresholds', {})
+        poll = cfg.get('poll', {})
+        low_min   = int(poll.get('low_minutes', 10))
+        high_min  = int(poll.get('high_minutes', 2))
+        high_thr  = int(poll.get('high_threshold', 50))
+
+        if not order:
+            time.sleep(60); continue
+
+        current = open(CURRENT_FILE).read().strip() if os.path.exists(CURRENT_FILE) else ''
+
+        usage = {name: fetch_usage(name) for name in order}
+
+        cur_util = get_utilization(usage.get(current))
+        sleep_sec = high_min * 60 if (cur_util is not None and cur_util >= high_thr) else low_min * 60
+
+        manual = get_manual_switch()
+        if manual and manual.get('account') == current:
+            threshold = thresholds.get(current)
+            if threshold is not None and cur_util is not None and cur_util >= threshold:
+                clear_manual_switch()
+            else:
+                time.sleep(sleep_sec); continue
+
+        cur_threshold = thresholds.get(current)
+        if cur_threshold is None or cur_util is None or cur_util < cur_threshold:
+            time.sleep(sleep_sec); continue
+
+        candidates = [(n, get_utilization(usage.get(n))) for n in order if n != current]
+        under = [(n, u) for n, u in candidates if u is not None and thresholds.get(n) is not None and u < thresholds[n]]
+
+        if under:
+            target, target_util = under[0]
+        else:
+            measured = [(n, u) for n, u in candidates if u is not None]
+            if not measured:
+                time.sleep(sleep_sec); continue
+            target, target_util = min(measured, key=lambda x: x[1])
+            log_event('all_over_threshold', selected=target, usage=target_util)
+            notify('relay', f'All accounts over threshold — switching to {target} ({target_util}%)')
+            do_switch(target)
+            time.sleep(sleep_sec); continue
+
+        log_event('switch', frm=current, to=target, usage=cur_util)
+        notify('relay', f'switched {current} → {target} ({current} at {cur_util}%)')
+        do_switch(target)
+        time.sleep(sleep_sec)
+
+if __name__ == '__main__':
+    main()
+DAEMON_EOF
+  chmod 755 "${AUTOSWITCH_DAEMON}"
+}
+
+cmd_autoswitch_config() {
+  hdr "autoswitch — configure"
+
+  local accounts=()
+  local name
+  while IFS= read -r name; do accounts+=("${name}"); done < <(list_account_names)
+
+  if [[ ${#accounts[@]} -eq 0 ]]; then
+    err "No accounts found. Run: relay add <name>"
+    exit 1
+  fi
+
+  echo ""
+  printf "  Accounts found: ${CY}%s${R}\n\n" "$(IFS=', '; echo "${accounts[*]}")"
+
+  printf "  ${B}Switch order${R} (comma-separated, only listed accounts join autoswitch):\n"
+  printf "  > "; read -r order_input
+  local order_str; order_str=$(echo "${order_input}" | "${PY}" -c "
+import sys,re
+raw=sys.stdin.read().strip()
+names=[x.strip() for x in raw.split(',') if x.strip()]
+print(','.join(names))")
+
+  echo ""
+  printf "  ${B}Thresholds${R} (press enter to skip account — it won't join autoswitch):\n"
+  local thresholds_json="{"
+  local order_json="["
+  local first_order=1
+  local first_thresh=1
+  IFS=',' read -ra order_arr <<< "${order_str}"
+  for acct in "${order_arr[@]}"; do
+    printf "  %s threshold %% [default 80]: " "${acct}"
+    read -r val
+    if [[ -z "${val}" ]]; then
+      continue
+    fi
+    [[ ${first_order} -eq 0 ]] && order_json+=","
+    order_json+="\"${acct}\""
+    first_order=0
+    [[ ${first_thresh} -eq 0 ]] && thresholds_json+=","
+    thresholds_json+="\"${acct}\":${val}"
+    first_thresh=0
+  done
+  order_json+="]"
+  thresholds_json+="}"
+
+  echo ""
+  printf "  ${B}Poll interval${R} — low usage (minutes) [default 10]: "
+  read -r low_min; low_min="${low_min:-10}"
+  printf "  ${B}Poll interval${R} — high usage (minutes) [default 2]: "
+  read -r high_min; high_min="${high_min:-2}"
+  printf "  ${B}High usage starts at${R} %% [default 50]: "
+  read -r high_thr; high_thr="${high_thr:-50}"
+
+  local cfg_file="${RELAY_DIR}/autoswitch.json"
+  printf '{"order":%s,"thresholds":%s,"poll":{"low_minutes":%s,"high_minutes":%s,"high_threshold":%s}}' \
+    "${order_json}" "${thresholds_json}" "${low_min}" "${high_min}" "${high_thr}" \
+    | "${PY}" -c "import json,sys; print(json.dumps(json.load(sys.stdin), indent=2))" \
+    > "${cfg_file}"
+
+  echo ""
+  ok "Saved to ${cfg_file}"
+  log "Run ${CY}relay autoswitch start${R} to activate"
+}
+
+cmd_autoswitch_start() {
+  [[ -f "${RELAY_DIR}/autoswitch.json" ]] || {
+    err "No config found. Run: relay autoswitch config"
+    exit 1
+  }
+
+  hdr "autoswitch — start"
+  _extract_daemon
+  log "Daemon extracted to ${AUTOSWITCH_DAEMON}"
+
+  local py; py=$(command -v python3 || command -v python || echo "")
+  [[ -z "${py}" ]] && { err "python3 required"; exit 1; }
+
+  if [[ "$(uname)" == "Darwin" ]]; then
+    mkdir -p "${HOME}/Library/LaunchAgents"
+    cat > "${AUTOSWITCH_PLIST}" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>com.relay.autoswitch</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>${py}</string>
+        <string>${AUTOSWITCH_DAEMON}</string>
+    </array>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><true/>
+    <key>StandardOutPath</key><string>${RELAY_DIR}/autoswitch-daemon.log</string>
+    <key>StandardErrorPath</key><string>${RELAY_DIR}/autoswitch-daemon.log</string>
+</dict>
+</plist>
+PLIST
+    launchctl unload "${AUTOSWITCH_PLIST}" 2>/dev/null || true
+    launchctl load "${AUTOSWITCH_PLIST}"
+    ok "Daemon started via launchd"
+
+  elif command -v systemctl >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1; then
+    mkdir -p "${HOME}/.config/systemd/user"
+    cat > "${AUTOSWITCH_SERVICE}" <<SVCEOF
+[Unit]
+Description=relay autoswitch daemon
+
+[Service]
+ExecStart=${py} ${AUTOSWITCH_DAEMON}
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+SVCEOF
+    systemctl --user daemon-reload
+    systemctl --user enable --now relay-autoswitch
+    ok "Daemon started via systemd"
+
+  else
+    # ponytail: cron fallback — daemon's lock file prevents overlap
+    local cron_entry="*/2 * * * * ${py} ${AUTOSWITCH_DAEMON}"
+    ( crontab -l 2>/dev/null | grep -v "autoswitch-daemon"; echo "${cron_entry}" ) | crontab -
+    ok "Daemon scheduled via cron (every 2 min)"
+    warn "For persistent autoswitch, install systemd or use macOS"
+  fi
+
+  log "Run ${CY}relay autoswitch status${R} to verify"
+}
+
+cmd_autoswitch_stop() {
+  hdr "autoswitch — stop"
+
+  if [[ "$(uname)" == "Darwin" ]] && [[ -f "${AUTOSWITCH_PLIST}" ]]; then
+    launchctl unload "${AUTOSWITCH_PLIST}" 2>/dev/null || true
+    rm -f "${AUTOSWITCH_PLIST}"
+    ok "Removed launchd job"
+
+  elif command -v systemctl >/dev/null 2>&1; then
+    systemctl --user disable --now relay-autoswitch 2>/dev/null || true
+    rm -f "${AUTOSWITCH_SERVICE}"
+    systemctl --user daemon-reload
+    ok "Removed systemd service"
+
+  else
+    crontab -l 2>/dev/null | grep -v "autoswitch-daemon" | crontab -
+    ok "Removed cron entry"
+  fi
+
+  local pid; pid=$(cat "${RELAY_DIR}/autoswitch.lock" 2>/dev/null || echo "")
+  if [[ -n "${pid}" ]]; then
+    kill "${pid}" 2>/dev/null || true
+  fi
+  rm -f "${RELAY_DIR}/autoswitch.lock"
+  ok "Daemon stopped"
+}
+
+cmd_autoswitch_status() {
+  hdr "autoswitch — status"
+
+  local pid; pid=$(cat "${RELAY_DIR}/autoswitch.lock" 2>/dev/null || echo "")
+  if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
+    printf "  ${B}Daemon:${R}  ${GR}● running${R}  (pid ${pid})\n"
+  else
+    printf "  ${B}Daemon:${R}  ${D}○ stopped${R}\n"
+  fi
+
+  local cfg="${RELAY_DIR}/autoswitch.json"
+  if [[ ! -f "${cfg}" ]]; then
+    warn "No config. Run: relay autoswitch config"
+    return 0
+  fi
+
+  printf "  ${B}Config:${R}  ${D}%s${R}\n\n" "${cfg}"
+
+  local current; current=$(current_name)
+
+  "${PY}" - "${cfg}" "${current}" <<'EOF'
+import json, sys, os, time
+
+cfg = json.load(open(sys.argv[1]))
+current = sys.argv[2]
+order = cfg.get('order', [])
+thresholds = cfg.get('thresholds', {})
+relay_dir = os.path.expanduser('~/.claude-relay')
+cache_file = os.path.join(relay_dir, 'usage_cache.json')
+
+R='\033[0m'; B='\033[1m'; D='\033[2m'
+GR='\033[32m'; YL='\033[33m'; RD='\033[31m'; CY='\033[36m'
+
+try: cache = json.load(open(cache_file))
+except: cache = {}
+
+def get_util(name):
+    entry = cache.get(name)
+    if not entry: return None
+    data = entry.get('data') if isinstance(entry, dict) else None
+    if not isinstance(data, dict): return None
+    fh = data.get('five_hour') or {}
+    u = fh.get('utilization')
+    return int(u) if u is not None else None
+
+print(f'  {B}{"order":<4} {"account":<14} {"threshold":<12} {"cached usage":<14}{R}')
+print(f'  {D}{"─"*52}{R}')
+for i, name in enumerate(order, 1):
+    cur = name == current
+    marker = f'{GR}●{R}' if cur else ' '
+    ncol = GR + B if cur else B
+    thr = thresholds.get(name)
+    thr_s = f'{thr}%' if thr is not None else f'{D}skipped{R}'
+    util = get_util(name)
+    util_s = f'{util}%' if util is not None else f'{D}—{R}'
+    over = thr is not None and util is not None and util >= thr
+    if over: util_s += f' {YL}⚠ over{R}'
+    next_s = ''
+    if not cur and not over:
+        prev_over = all(
+            (thresholds.get(order[j]) is not None and
+             get_util(order[j]) is not None and
+             get_util(order[j]) >= thresholds[order[j]])
+            for j in range(i-1)
+        )
+        if prev_over: next_s = f' {CY}← next{R}'
+    print(f'  {marker} {D}{i:<2}{R}{ncol}{name:<14}{R} {thr_s:<12} {util_s}{next_s}')
+
+log_file = os.path.join(os.path.dirname(sys.argv[1]), 'autoswitch.log')
+try:
+    lines = open(log_file).readlines()
+    for line in reversed(lines):
+        e = json.loads(line)
+        if e.get('event') == 'switch':
+            print(f'\n  {B}Last switch:{R} {e["frm"]} → {e["to"]}')
+            break
+except: pass
+EOF
+
+  echo ""
+  log "Run ${CY}relay autoswitch log${R} to see full history"
+}
+
+cmd_autoswitch_log() {
+  local log_file="${RELAY_DIR}/autoswitch.log"
+  [[ -f "${log_file}" ]] || { warn "No log yet"; return 0; }
+
+  hdr "autoswitch — log (last 20 events)"
+  "${PY}" - "${log_file}" <<'EOF'
+import json, sys, datetime
+
+R='\033[0m'; B='\033[1m'; D='\033[2m'
+GR='\033[32m'; YL='\033[33m'; RD='\033[31m'; CY='\033[36m'
+
+lines = open(sys.argv[1]).readlines()
+for line in lines[-20:]:
+    try:
+        e = json.loads(line)
+        ts = datetime.datetime.fromtimestamp(e['ts']).strftime('%m/%d %H:%M')
+        ev = e['event']
+        if ev == 'switch':
+            print(f'  {D}{ts}{R}  {GR}switch{R}     {e["frm"]} → {CY}{e["to"]}{R}  ({e.get("usage","?")}%)')
+        elif ev == 'all_over_threshold':
+            print(f'  {D}{ts}{R}  {YL}all_over{R}   → {CY}{e["selected"]}{R}  ({e.get("usage","?")}%) {YL}⚠{R}')
+        elif ev == 'start':
+            print(f'  {D}{ts}{R}  {D}daemon start{R}')
+    except: pass
+EOF
+}
+
+cmd_autoswitch() {
+  local sub="${1:-}"; [[ $# -gt 0 ]] && shift
+  case "${sub}" in
+    config)  cmd_autoswitch_config ;;
+    start)   cmd_autoswitch_start ;;
+    stop)    cmd_autoswitch_stop ;;
+    status)  cmd_autoswitch_status ;;
+    log)     cmd_autoswitch_log ;;
+    *)
+      hdr "autoswitch"
+      printf "  %-32s %s\n" "  relay autoswitch config"  "interactive setup wizard"
+      printf "  %-32s %s\n" "  relay autoswitch start"   "install and start daemon"
+      printf "  %-32s %s\n" "  relay autoswitch stop"    "stop and remove daemon"
+      printf "  %-32s %s\n" "  relay autoswitch status"  "show daemon state + config"
+      printf "  %-32s %s\n" "  relay autoswitch log"     "show recent switch history"
+      echo ""
+      ;;
+  esac
+}
+
 _script_dir() {
   # Resolve symlinks so we find package.json even when installed via npm/symlink
   local src="$0"
@@ -769,6 +1290,11 @@ cmd_help() {
   printf "  %-32s %s\n" "  relay update"              "update to latest version"
   printf "  %-32s %s\n" "  relay uninstall"          "remove relay and all account data"
   echo ""
+  printf "  ${B}Autoswitch${R}\n"
+  printf "  %-32s %s\n" "  relay autoswitch config"   "set up auto-switching"
+  printf "  %-32s %s\n" "  relay autoswitch start/stop" "manage background daemon"
+  printf "  %-32s %s\n" "  relay autoswitch status"   "daemon state + thresholds"
+  echo ""
   printf "  ${D}switches the OAuth credential (macOS Keychain / Linux ~/.claude/.credentials.json); sessions are shared${R}\n"
   printf "  ${D}after switching: claude -c to resume, claude --resume <id> for a specific session${R}\n\n"
 }
@@ -801,6 +1327,7 @@ case "${CMD}" in
   remove|rm|del)    cmd_remove "$@" ;;
   rename|mv)        cmd_rename "$@" ;;
   sessions|sess)    cmd_sessions ;;
+  autoswitch|as)    cmd_autoswitch "$@" ;;
   version|--version|-V) cmd_version ;;
   update)           cmd_update ;;
   install)          cmd_install ;;
