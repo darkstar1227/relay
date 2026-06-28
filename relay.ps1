@@ -120,6 +120,27 @@ function Get-Usage($tok) {
     } catch { return $null }
 }
 
+# ponytail: intentional copy of try_refresh() — relay.ps1 is a standalone Windows script
+function Invoke-TokenRefresh($credPath) {
+    try {
+        $d     = Get-Content $credPath -Raw | ConvertFrom-Json
+        $oauth = $d.claudeAiOauth
+        $rt    = $oauth.refreshToken
+        if (-not $rt) { return $null }
+        $body  = "grant_type=refresh_token&refresh_token=$([System.Uri]::EscapeDataString($rt))"
+        $resp  = Invoke-RestMethod "https://api.anthropic.com/token" -Method Post `
+                     -Body $body -ContentType "application/x-www-form-urlencoded" `
+                     -Headers @{ "User-Agent" = "relay/2.0" } -TimeoutSec 10
+        $oauth.accessToken = $resp.access_token
+        if ($resp.refresh_token) { $oauth.refreshToken = $resp.refresh_token }
+        $expiresMs = [System.DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() + ($resp.expires_in ?? 3600) * 1000
+        $oauth | Add-Member -NotePropertyName expiresAt -NotePropertyValue $expiresMs -Force
+        $d.claudeAiOauth = $oauth
+        $d | ConvertTo-Json -Depth 10 | Set-Content $credPath -Encoding UTF8
+        return $resp.access_token
+    } catch { return $null }
+}
+
 function New-Bar([int]$pct, [int]$w = 10) {
     $f = [int]([Math]::Round($pct / 100.0 * $w))
     $c = if ($pct -lt 50) { $GR } elseif ($pct -lt 80) { $YL } else { $RD }
@@ -174,8 +195,22 @@ function Show-Table([string]$mode, [bool]$noUsage = $false) {
     if (-not $noUsage) {
         Write-Host "  ${D}fetching usage...${R}" -NoNewline
         foreach ($n in $names) {
-            $tok = Get-Token (Get-Content (Get-CredsPath $n) -Raw -ErrorAction SilentlyContinue)
-            $usage[$n] = if ($tok) { Get-Usage $tok } else { $null }
+            $credPath = Get-CredsPath $n
+            $raw = Get-Content $credPath -Raw -ErrorAction SilentlyContinue
+            $tok = Get-Token $raw
+            if ($tok) {
+                # Pre-emptive: try refresh if within 5 minutes of expiry
+                try {
+                    $oauth = ($raw | ConvertFrom-Json).claudeAiOauth
+                    $expiresAt = $oauth.expiresAt
+                    $nowMs = [System.DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+                    if ($expiresAt -and $nowMs -gt ($expiresAt - 300000)) {
+                        $newTok = Invoke-TokenRefresh $credPath
+                        if ($newTok) { $tok = $newTok }
+                    }
+                } catch {}
+                $usage[$n] = Get-Usage $tok
+            } else { $usage[$n] = $null }
         }
         Write-Host "`r$(' ' * 25)`r" -NoNewline
     }

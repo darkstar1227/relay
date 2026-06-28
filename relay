@@ -226,8 +226,9 @@ def save_cache(c):
     except Exception:
         pass
 
-def fetch(name):
+def fetch(name, _retried=False):
     cred_path = os.path.join(creds_dir, name + '.json')
+    was_refreshed = False
     try:
         d = json.load(open(cred_path))
         oauth = d.get('claudeAiOauth') or {}
@@ -235,16 +236,21 @@ def fetch(name):
         if not tok:
             return name, None
 
-        # Short-circuit: token is locally known to be expired
         expires_at_ms = oauth.get('expiresAt', 0)
         now_ms = datetime.datetime.now(datetime.timezone.utc).timestamp() * 1000
-        if expires_at_ms and now_ms > expires_at_ms:
-            return name, 'expired'
+        # Pre-emptive: refresh 5 minutes before expiry (300000ms)
+        if expires_at_ms and now_ms > expires_at_ms - 300000:
+            new_tok = try_refresh(name, cred_path)
+            if new_tok:
+                tok = new_tok
+                was_refreshed = True
+            elif now_ms > expires_at_ms:
+                return name, 'expired'
+            # else: pre-emptive window, refresh failed, token still valid — fall through
 
-        # Check cache
         c = load_cache()
         entry = c.get(name)
-        if entry and now_ms / 1000 - entry.get('ts', 0) < CACHE_TTL:
+        if entry and now_ms / 1000 - entry.get('ts', 0) < CACHE_TTL and not was_refreshed:
             return name, entry.get('data')
 
         req = urllib.request.Request(
@@ -256,7 +262,10 @@ def fetch(name):
         save_cache(c)
         return name, data
     except urllib.error.HTTPError as e:
-        if e.code == 401:
+        if e.code == 401 and not _retried:
+            new_tok = try_refresh(name, cred_path)
+            if new_tok:
+                return fetch(name, _retried=True)
             return name, 'expired'
         return name, None
     except Exception:
@@ -399,7 +408,7 @@ cmd_status() {
     warn "Recorded account '${current}' no longer exists"
   else
     "${PY}" - "$(account_creds "${current}")" "${current}" "$(get_meta_email "${current}")" <<'EOF'
-import json, sys, datetime, urllib.request
+import json, sys, datetime, urllib.request, urllib.parse
 
 creds_path, name, email = sys.argv[1], sys.argv[2], sys.argv[3]
 R='\033[0m'; B='\033[1m'; D='\033[2m'
@@ -408,11 +417,43 @@ GR='\033[32m'; YL='\033[33m'; RD='\033[31m'; CY='\033[36m'
 print(f'  {B}Account:{R} {GR}{B}{name}{R}')
 print(f'  {B}Email:{R}   {email}')
 
+# ponytail: intentional copy of try_refresh() — cmd_status has its own heredoc scope
+def _try_refresh(cred_path):
+    try:
+        d2 = json.load(open(cred_path))
+        oauth2 = d2.get('claudeAiOauth') or {}
+        rt = oauth2.get('refreshToken', '')
+        if not rt:
+            return None
+        params = urllib.parse.urlencode({'grant_type': 'refresh_token', 'refresh_token': rt}).encode()
+        req2 = urllib.request.Request('https://api.anthropic.com/token', data=params,
+            headers={'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'relay/2.0'})
+        with urllib.request.urlopen(req2, timeout=10) as r2:
+            resp = json.loads(r2.read())
+        oauth2['accessToken'] = resp['access_token']
+        if 'refresh_token' in resp:
+            oauth2['refreshToken'] = resp['refresh_token']
+        oauth2['expiresAt'] = int(datetime.datetime.now(datetime.timezone.utc).timestamp() * 1000) + resp.get('expires_in', 3600) * 1000
+        d2['claudeAiOauth'] = oauth2
+        import os; open(cred_path, 'w').write(json.dumps(d2)); os.chmod(cred_path, 0o600)
+        return oauth2['accessToken']
+    except Exception:
+        return None
+
 try:
     d = json.load(open(creds_path))
-    tok = (d.get('claudeAiOauth') or {}).get('accessToken', '')
+    oauth = d.get('claudeAiOauth') or {}
+    tok = oauth.get('accessToken', '')
     if not tok:
         print(f'\n  {YL}⚠ No access token — please log in again{R}'); sys.exit(0)
+    expires_at_ms = oauth.get('expiresAt', 0)
+    now_ms = datetime.datetime.now(datetime.timezone.utc).timestamp() * 1000
+    if expires_at_ms and now_ms > expires_at_ms - 300000:
+        new_tok = _try_refresh(creds_path)
+        if new_tok:
+            tok = new_tok
+        elif now_ms > expires_at_ms:
+            print(f'\n  {YL}⚠ Token expired — run: relay refresh {name}{R}'); sys.exit(0)
     req = urllib.request.Request(
         'https://api.anthropic.com/api/oauth/usage',
         headers={'Authorization': 'Bearer ' + tok, 'User-Agent': 'relay/2.0'})
@@ -567,6 +608,55 @@ cmd_refresh() {
   save_meta_email "${name}"
   echo "${name}" > "${CURRENT_FILE}"
   ok "Account '${B}${name}${R}' refreshed  ${D}$(get_meta_email "${name}")${R}"
+}
+
+cmd_refresh_all() {
+  hdr "Refresh all accounts (silent OAuth)"
+  local names=()
+  while IFS= read -r f; do
+    names+=("$(basename "${f%.json}")")
+  done < <(find "${CREDS_DIR}" -maxdepth 1 -name '*.json' 2>/dev/null | sort)
+  [[ ${#names[@]} -eq 0 ]] && { warn "No accounts found"; return 0; }
+  "${PY}" - "${CREDS_DIR}" "${#names[@]}" "${names[@]}" <<'EOF'
+import json, sys, datetime, urllib.request, urllib.parse, os
+
+creds_dir, n = sys.argv[1], int(sys.argv[2])
+names = sys.argv[3:3+n]
+R='\033[0m'; B='\033[1m'; GR='\033[32m'; YL='\033[33m'; RD='\033[31m'
+
+# ponytail: intentional copy of try_refresh() — self-contained heredoc scope
+def try_refresh(name, cred_path):
+    try:
+        d = json.load(open(cred_path))
+        oauth = d.get('claudeAiOauth') or {}
+        rt = oauth.get('refreshToken', '')
+        if not rt:
+            return None
+        params = urllib.parse.urlencode({'grant_type': 'refresh_token', 'refresh_token': rt}).encode()
+        req = urllib.request.Request('https://api.anthropic.com/token', data=params,
+            headers={'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'relay/2.0'})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            resp = json.loads(r.read())
+        oauth['accessToken'] = resp['access_token']
+        if 'refresh_token' in resp:
+            oauth['refreshToken'] = resp['refresh_token']
+        oauth['expiresAt'] = int(datetime.datetime.now(datetime.timezone.utc).timestamp() * 1000) + resp.get('expires_in', 3600) * 1000
+        d['claudeAiOauth'] = oauth
+        open(cred_path, 'w').write(json.dumps(d))
+        os.chmod(cred_path, 0o600)
+        return oauth['accessToken']
+    except Exception:
+        return None
+
+for name in names:
+    cred_path = os.path.join(creds_dir, name + '.json')
+    result = try_refresh(name, cred_path)
+    if result:
+        print(f'  {GR}✓{R}  {B}{name}{R}  refreshed')
+    else:
+        print(f'  {YL}⚠{R}  {B}{name}{R}  refresh failed (token may already be fresh or refreshToken expired)')
+print()
+EOF
 }
 
 cmd_remove() {
@@ -781,6 +871,35 @@ def save_cache(c):
         with open(CACHE_FILE, 'w') as f: json.dump(c, f)
     except: pass
 
+# ponytail: intentional copy of try_refresh() — daemon is a standalone extracted script
+def try_refresh_daemon(name, cred_path):
+    try:
+        d = json.load(open(cred_path))
+        oauth = d.get('claudeAiOauth') or {}
+        rt = oauth.get('refreshToken', '')
+        if not rt:
+            return None
+        import urllib.parse
+        params = urllib.parse.urlencode({'grant_type': 'refresh_token', 'refresh_token': rt}).encode()
+        req = urllib.request.Request('https://api.anthropic.com/token', data=params,
+            headers={'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'relay/2.0'})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            resp = json.loads(r.read())
+        oauth['accessToken'] = resp['access_token']
+        if 'refresh_token' in resp:
+            oauth['refreshToken'] = resp['refresh_token']
+        oauth['expiresAt'] = int(time.time() * 1000) + resp.get('expires_in', 3600) * 1000
+        d['claudeAiOauth'] = oauth
+        content = json.dumps(d)
+        open(cred_path, 'w').write(content)
+        os.chmod(cred_path, 0o600)
+        current = open(CURRENT_FILE).read().strip() if os.path.exists(CURRENT_FILE) else ''
+        if name == current:
+            kc_write(content)  # critical: update keychain so do_switch() doesn't clobber
+        return oauth['accessToken']
+    except Exception:
+        return None
+
 def fetch_usage(name):
     cred_path = os.path.join(CREDS_DIR, name + '.json')
     try:
@@ -791,7 +910,12 @@ def fetch_usage(name):
 
         expires_at_ms = oauth.get('expiresAt', 0)
         now_ms = time.time() * 1000
-        if expires_at_ms and now_ms > expires_at_ms: return 'expired'
+        if expires_at_ms and now_ms > expires_at_ms - 300000:
+            new_tok = try_refresh_daemon(name, cred_path)
+            if new_tok:
+                tok = new_tok
+            elif now_ms > expires_at_ms:
+                return 'expired'
 
         c = load_cache()
         entry = c.get(name)
@@ -835,8 +959,18 @@ def main():
     check_single_instance()
     rotate_log()
     log_event('start')
+    last_refresh_ts = 0
 
     while True:
+        # Proactive refresh: every 30 minutes, refresh all account tokens
+        if time.time() - last_refresh_ts > 1800:
+            if os.path.isdir(CREDS_DIR):
+                for cred_file in os.listdir(CREDS_DIR):
+                    if cred_file.endswith('.json'):
+                        acct = cred_file[:-5]
+                        try_refresh_daemon(acct, os.path.join(CREDS_DIR, cred_file))
+            last_refresh_ts = time.time()
+
         cfg = load_config()
         if not cfg:
             time.sleep(60); continue
@@ -1431,6 +1565,7 @@ cmd_help() {
   printf "  %-32s %s\n" "  relay add <name>"         "add account via browser login"
   printf "  %-32s %s\n" "  relay add-force <name>"   "force re-login for existing account"
   printf "  %-32s %s\n" "  relay refresh <name>"     "re-login to refresh an expired token"
+  printf "  %-32s %s\n" "  relay refresh-all"        "silent OAuth refresh for all accounts"
   printf "  %-32s %s\n" "  relay save <name>"        "save current login state"
   printf "  %-32s %s\n" "  relay rename <old> <new>" "rename an account"
   printf "  %-32s %s\n" "  relay list"               "full list with weekly usage"
@@ -1466,6 +1601,7 @@ case "${CMD}" in
     cmd_add "$@" ;;
   save)             cmd_save "$@" ;;
   refresh)          cmd_refresh "$@" ;;
+  refresh-all)      cmd_refresh_all ;;
   switch|sw|use)
     if [[ -z "${1:-}" ]]; then cmd_quick
     elif [[ "${1}" =~ ^[0-9]+$ ]]; then
