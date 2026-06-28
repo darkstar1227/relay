@@ -223,7 +223,7 @@ Sessions live in `~/.claude/projects/` and are shared across all accounts — af
 
 ## Changelog
 
-### v2.2.2 — 2026-06-28
+### v2.2.3 — 2026-06-28
 - Fix OAuth token refresh: use correct endpoint (`/v1/oauth/token`), required `client_id`, and `anthropic-version: oauth-2025-04-20` header — `relay refresh-all` now works
 
 ### v2.2.0 — 2026-06-28
