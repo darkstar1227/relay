@@ -187,11 +187,11 @@ def try_refresh(name, cred_path):
         refresh_tok = oauth.get('refreshToken', '')
         if not refresh_tok:
             return None
-        params = urllib.parse.urlencode({'grant_type': 'refresh_token', 'refresh_token': refresh_tok}).encode()
+        params = urllib.parse.urlencode({'grant_type': 'refresh_token', 'refresh_token': refresh_tok, 'client_id': '9d1c250a-e61b-44d9-88ed-5944d1962f5e'}).encode()
         req = urllib.request.Request(
-            'https://api.anthropic.com/token',
+            'https://api.anthropic.com/v1/oauth/token',
             data=params,
-            headers={'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'relay/2.0'})
+            headers={'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'relay/2.0', 'anthropic-version': 'oauth-2025-04-20'})
         with urllib.request.urlopen(req, timeout=10) as r:
             resp = json.loads(r.read())
         oauth['accessToken'] = resp['access_token']
@@ -425,9 +425,9 @@ def _try_refresh(cred_path):
         rt = oauth2.get('refreshToken', '')
         if not rt:
             return None
-        params = urllib.parse.urlencode({'grant_type': 'refresh_token', 'refresh_token': rt}).encode()
-        req2 = urllib.request.Request('https://api.anthropic.com/token', data=params,
-            headers={'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'relay/2.0'})
+        params = urllib.parse.urlencode({'grant_type': 'refresh_token', 'refresh_token': rt, 'client_id': '9d1c250a-e61b-44d9-88ed-5944d1962f5e'}).encode()
+        req2 = urllib.request.Request('https://api.anthropic.com/v1/oauth/token', data=params,
+            headers={'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'relay/2.0', 'anthropic-version': 'oauth-2025-04-20'})
         with urllib.request.urlopen(req2, timeout=10) as r2:
             resp = json.loads(r2.read())
         oauth2['accessToken'] = resp['access_token']
@@ -632,9 +632,9 @@ def try_refresh(name, cred_path):
         rt = oauth.get('refreshToken', '')
         if not rt:
             return None
-        params = urllib.parse.urlencode({'grant_type': 'refresh_token', 'refresh_token': rt}).encode()
-        req = urllib.request.Request('https://api.anthropic.com/token', data=params,
-            headers={'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'relay/2.0'})
+        params = urllib.parse.urlencode({'grant_type': 'refresh_token', 'refresh_token': rt, 'client_id': '9d1c250a-e61b-44d9-88ed-5944d1962f5e'}).encode()
+        req = urllib.request.Request('https://api.anthropic.com/v1/oauth/token', data=params,
+            headers={'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'relay/2.0', 'anthropic-version': 'oauth-2025-04-20'})
         with urllib.request.urlopen(req, timeout=10) as r:
             resp = json.loads(r.read())
         oauth['accessToken'] = resp['access_token']
@@ -880,9 +880,9 @@ def try_refresh_daemon(name, cred_path):
         if not rt:
             return None
         import urllib.parse
-        params = urllib.parse.urlencode({'grant_type': 'refresh_token', 'refresh_token': rt}).encode()
-        req = urllib.request.Request('https://api.anthropic.com/token', data=params,
-            headers={'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'relay/2.0'})
+        params = urllib.parse.urlencode({'grant_type': 'refresh_token', 'refresh_token': rt, 'client_id': '9d1c250a-e61b-44d9-88ed-5944d1962f5e'}).encode()
+        req = urllib.request.Request('https://api.anthropic.com/v1/oauth/token', data=params,
+            headers={'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'relay/2.0', 'anthropic-version': 'oauth-2025-04-20'})
         with urllib.request.urlopen(req, timeout=10) as r:
             resp = json.loads(r.read())
         oauth['accessToken'] = resp['access_token']

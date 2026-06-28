@@ -223,6 +223,9 @@ Sessions live in `~/.claude/projects/` and are shared across all accounts — af
 
 ## Changelog
 
+### v2.2.2 — 2026-06-28
+- Fix OAuth token refresh: use correct endpoint (`/v1/oauth/token`), required `client_id`, and `anthropic-version: oauth-2025-04-20` header — `relay refresh-all` now works
+
 ### v2.2.0 — 2026-06-28
 - Silent OAuth auto-refresh: `relay list` and `relay status` now silently refresh expired tokens using the stored `refreshToken` — no browser login needed for routine expiry
 - Pre-emptive refresh: tokens are refreshed 5 minutes before expiry, not just after

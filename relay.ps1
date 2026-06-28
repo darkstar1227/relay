@@ -127,10 +127,10 @@ function Invoke-TokenRefresh($credPath) {
         $oauth = $d.claudeAiOauth
         $rt    = $oauth.refreshToken
         if (-not $rt) { return $null }
-        $body  = "grant_type=refresh_token&refresh_token=$([System.Uri]::EscapeDataString($rt))"
-        $resp  = Invoke-RestMethod "https://api.anthropic.com/token" -Method Post `
+        $body  = "grant_type=refresh_token&refresh_token=$([System.Uri]::EscapeDataString($rt))&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+        $resp  = Invoke-RestMethod "https://api.anthropic.com/v1/oauth/token" -Method Post `
                      -Body $body -ContentType "application/x-www-form-urlencoded" `
-                     -Headers @{ "User-Agent" = "relay/2.0" } -TimeoutSec 10
+                     -Headers @{ "User-Agent" = "relay/2.0"; "anthropic-version" = "oauth-2025-04-20" } -TimeoutSec 10
         $oauth.accessToken = $resp.access_token
         if ($resp.refresh_token) { $oauth.refreshToken = $resp.refresh_token }
         $expiresMs = [System.DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() + ($resp.expires_in ?? 3600) * 1000
