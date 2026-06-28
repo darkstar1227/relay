@@ -615,9 +615,9 @@ cmd_refresh_all() {
   local names=()
   while IFS= read -r f; do
     names+=("$(basename "${f%.json}")")
-  done < <(find "${CREDS_DIR}" -maxdepth 1 -name '*.json' 2>/dev/null | sort)
+  done < <(find "${CREDS_STORE}" -maxdepth 1 -name '*.json' 2>/dev/null | sort)
   [[ ${#names[@]} -eq 0 ]] && { warn "No accounts found"; return 0; }
-  "${PY}" - "${CREDS_DIR}" "${#names[@]}" "${names[@]}" <<'EOF'
+  "${PY}" - "${CREDS_STORE}" "${#names[@]}" "${names[@]}" <<'EOF'
 import json, sys, datetime, urllib.request, urllib.parse, os
 
 creds_dir, n = sys.argv[1], int(sys.argv[2])
