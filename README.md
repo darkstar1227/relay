@@ -223,6 +223,13 @@ Sessions live in `~/.claude/projects/` and are shared across all accounts — af
 
 ## Changelog
 
+### v2.2.0 — 2026-06-28
+- Silent OAuth auto-refresh: `relay list` and `relay status` now silently refresh expired tokens using the stored `refreshToken` — no browser login needed for routine expiry
+- Pre-emptive refresh: tokens are refreshed 5 minutes before expiry, not just after
+- Autoswitch daemon now refreshes tokens proactively every 30 minutes and on expiry detection, ensuring the daemon never switches to a dead account
+- New `relay refresh-all` command: silently refreshes all accounts via OAuth in one go
+- Windows (`relay.ps1`): token refresh wired into `Show-Table` usage loop
+
 ### v2.1.1 — 2026-06-24
 - Display current version and latest version at the end of `list`, `status`, `relay` (menu), `sessions`, and `help` commands
 - Background version check (24h cache) — non-blocking, never slows down output
