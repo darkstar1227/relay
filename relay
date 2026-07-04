@@ -203,7 +203,12 @@ def try_refresh(name, cred_path):
         content = json.dumps(d)
         with open(cred_path, 'w') as f: f.write(content)
         os.chmod(cred_path, 0o600)
-        if name == current:
+        # Re-read CURRENT_FILE freshly — do_switch() may have fired during the
+        # parallel fetch, making the captured `current` arg stale. Writing
+        # keychain with a stale current would clobber a concurrent account switch.
+        current_file = os.path.join(relay_dir, 'current')
+        live_current = open(current_file).read().strip() if os.path.exists(current_file) else ''
+        if name == live_current:
             update_live_creds(content)
         return oauth['accessToken']
     except Exception:
@@ -362,7 +367,7 @@ do_switch() {
 
   local email; email=$(get_meta_email "${name}")
   printf "\n  ${GR}${B}✓ switched → %s${R}  ${D}%s${R}\n" "${name}" "${email}"
-  printf "  ${D}Restart claude to apply. Resume last session: ${CY}claude -c${R}\n\n"
+  printf "  ${D}Active sessions pick up the switch on next message. New session: ${CY}claude -c${R}\n\n"
 
   # ponytail: sentinel lets autoswitch daemon skip this account until threshold hit
   printf '{"account":"%s","ts":%s}' "${name}" "$(date +%s)" > "${RELAY_DIR}/manual_switch"

@@ -223,6 +223,10 @@ Sessions live in `~/.claude/projects/` and are shared across all accounts — af
 
 ## Changelog
 
+### v2.2.4 — 2026-07-04
+- Fix: `relay switch` from another terminal no longer gets clobbered by a concurrent `relay list` / `!relay` menu run. Root cause: `try_refresh()` in the parallel usage-fetch used a stale snapshot of the current account, causing it to write the old account's refreshed token back to keychain and undo the switch. Now reads `CURRENT_FILE` freshly at write time.
+- Active sessions pick up an account switch on the next message without restarting
+
 ### v2.2.3 — 2026-06-28
 - Fix OAuth token refresh: use correct endpoint (`/v1/oauth/token`), required `client_id`, and `anthropic-version: oauth-2025-04-20` header — `relay refresh-all` now works
 
