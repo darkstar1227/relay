@@ -136,6 +136,14 @@ mode, creds_dir, meta_dir, current = sys.argv[1], sys.argv[2], sys.argv[3], sys.
 no_usage = '--no-usage' in sys.argv
 relay_dir = os.path.dirname(creds_dir)
 cache_file = os.path.join(relay_dir, 'usage_cache.json')
+
+# Load locks from autoswitch config (best-effort, no error if missing)
+_locks = []
+try:
+    _as_cfg = json.load(open(os.path.join(relay_dir, 'autoswitch.json')))
+    _locks = _as_cfg.get('locks', [])
+except Exception:
+    pass
 CACHE_TTL = 120  # seconds
 
 R='\033[0m'; B='\033[1m'; D='\033[2m'
@@ -316,7 +324,8 @@ if mode == 'quick':
         ncol = GR + B if cur else B
         email = get_email(name)
         u = u5_str(usage.get(name)) if not no_usage else ''
-        print(f'  {marker}  {ncol}{name:<12}{R}  {D}{email:<26}{R}  {u}')
+        lock_badge = f' {YL}🔒{R}' if name in _locks else ''
+        print(f'  {marker}  {ncol}{name:<12}{R}  {D}{email:<26}{R}  {u}{lock_badge}')
     print()
     print(f'  {D}switch:{R} {CY}!relay <index or name>{R}   {D}details:{R} {CY}!relay status{R}')
     print()
@@ -331,8 +340,9 @@ else:
         d = usage.get(name)
         u5 = u5_str(d) if not no_usage else '—'
         u7 = u7_str(d, name) if not no_usage else '—'
+        lock_badge = f' {YL}🔒{R}' if name in _locks else ''
         # ANSI codes don't consume display width — pad manually for alignment
-        print(f'  {marker} {D}{i:<2}{R}{ncol}{name:<12}{R} {email:<28} {u5:<52} {u7}')
+        print(f'  {marker} {D}{i:<2}{R}{ncol}{name:<12}{R} {email:<28} {u5:<52} {u7}{lock_badge}')
     print()
     n_warn = sum(1 for d in usage.values() if isinstance(d, dict) and (d.get('five_hour') or {}).get('utilization', 0) >= 80)
     if n_warn:
@@ -1338,6 +1348,7 @@ cfg = json.load(open(sys.argv[1]))
 current = sys.argv[2]
 order = cfg.get('order', [])
 thresholds = cfg.get('thresholds', {})
+locks = cfg.get('locks', [])
 relay_dir = os.path.expanduser('~/.claude-relay')
 cache_file = os.path.join(relay_dir, 'usage_cache.json')
 
@@ -1356,8 +1367,8 @@ def get_util(name):
     u = fh.get('utilization')
     return int(u) if u is not None else None
 
-print(f'  {B}{"order":<4} {"account":<14} {"threshold":<12} {"cached usage":<14}{R}')
-print(f'  {D}{"─"*52}{R}')
+print(f'  {B}{"order":<4} {"account":<14} {"threshold":<12} {"cached usage":<14} {"lock":<6}{R}')
+print(f'  {D}{"─"*58}{R}')
 for i, name in enumerate(order, 1):
     cur = name == current
     marker = f'{GR}●{R}' if cur else ' '
@@ -1377,7 +1388,8 @@ for i, name in enumerate(order, 1):
             for j in range(i-1)
         )
         if prev_over: next_s = f' {CY}← next{R}'
-    print(f'  {marker} {D}{i:<2}{R}{ncol}{name:<14}{R} {thr_s:<12} {util_s}{next_s}')
+    lock_s = f' {YL}🔒{R}' if name in locks else ''
+    print(f'  {marker} {D}{i:<2}{R}{ncol}{name:<14}{R} {thr_s:<12} {util_s}{next_s}{lock_s}')
 
 log_file = os.path.join(os.path.dirname(sys.argv[1]), 'autoswitch.log')
 try:
@@ -1396,6 +1408,8 @@ EOF
   printf "  %-34s %s\n" "  ${CY}relay autoswitch stop${R}"   "stop daemon"
   printf "  %-34s %s\n" "  ${CY}relay autoswitch config${R}" "edit settings"
   printf "  %-34s %s\n" "  ${CY}relay autoswitch log${R}"    "switch history"
+  printf "  %-34s %s\n" "  ${CY}relay lock <name>${R}"       "lock account (skip when over threshold)"
+  printf "  %-34s %s\n" "  ${CY}relay unlock <name>${R}"     "remove lock"
   _show_update_notice
 }
 
@@ -1744,6 +1758,9 @@ cmd_help() {
   printf "  %-32s %s\n" "  relay autoswitch config"   "set up auto-switching"
   printf "  %-32s %s\n" "  relay autoswitch start/stop" "manage background daemon"
   printf "  %-32s %s\n" "  relay autoswitch status"   "daemon state + thresholds"
+  printf "  %-32s %s\n" "  relay lock <name>"         "prevent account from cycling back when over limit"
+  printf "  %-32s %s\n" "  relay unlock <name>"       "remove lock"
+  printf "  %-32s %s\n" "  relay lock"                "show locked accounts"
   echo ""
   printf "  ${D}switches the OAuth credential (macOS Keychain / Linux ~/.claude/.credentials.json); sessions are shared${R}\n"
   printf "  ${D}after switching: claude -c to resume, claude --resume <id> for a specific session${R}\n\n"

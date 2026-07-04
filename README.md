@@ -223,6 +223,13 @@ Sessions live in `~/.claude/projects/` and are shared across all accounts — af
 
 ## Changelog
 
+### v2.2.7 — 2026-07-05
+- `relay lock <name>` / `relay unlock <name>`: lock an account so it won't be cycled back to when over its usage threshold
+- `relay lock` (no args): show locked accounts
+- Autoswitch daemon now auto-enables with default 80% threshold when 2+ accounts exist — no config required
+- Cycling follows `order` sequence; locked+over-threshold accounts are skipped; if all candidates are blocked, stays on current account and notifies
+- Lock badge (🔒) shown in `relay list` and `relay autoswitch status`
+
 ### v2.2.6 — 2026-07-04
 - `relay status -f` / `relay status --follow`: live-refresh current account status, same 30-second interval as `relay list -f`
 
