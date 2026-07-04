@@ -998,6 +998,14 @@ def get_utilization(usage_data):
     u = fh.get('utilization')
     return int(u) if u is not None else None
 
+def is_blocked(name, thr_map, locks_list, usage_map):
+    """True if account is locked AND at or over its threshold — skip as switch target."""
+    if name not in locks_list:
+        return False
+    util = get_utilization(usage_map.get(name))
+    threshold = thr_map.get(name, 80)
+    return util is not None and util >= threshold
+
 # ── manual switch protection ───────────────────────────────────────
 def get_manual_switch():
     try: return json.load(open(MANUAL_FILE))
@@ -1009,8 +1017,21 @@ def clear_manual_switch():
 
 # ── main loop ─────────────────────────────────────────────────────
 def load_config():
-    try: return json.load(open(CONFIG_FILE))
-    except: return None
+    try:
+        return json.load(open(CONFIG_FILE))
+    except:
+        # Auto-default: 2+ accounts → enable with 80% threshold, no explicit config needed
+        if not os.path.isdir(CREDS_DIR):
+            return None
+        accounts = sorted(f[:-5] for f in os.listdir(CREDS_DIR) if f.endswith('.json'))
+        if len(accounts) < 2:
+            return None
+        return {
+            'order': accounts,
+            'thresholds': {a: 80 for a in accounts},
+            'locks': [],
+            'poll': {'low_minutes': 10, 'high_minutes': 2, 'high_threshold': 50}
+        }
 
 def main():
     check_single_instance()
@@ -1034,6 +1055,7 @@ def main():
 
         order = cfg.get('order', [])
         thresholds = cfg.get('thresholds', {})
+        locks = cfg.get('locks', [])
         poll = cfg.get('poll', {})
         low_min   = int(poll.get('low_minutes', 10))
         high_min  = int(poll.get('high_minutes', 2))
@@ -1061,21 +1083,23 @@ def main():
         if cur_threshold is None or cur_util is None or cur_util < cur_threshold:
             time.sleep(sleep_sec); continue
 
-        candidates = [(n, get_utilization(usage.get(n))) for n in order if n != current]
-        under = [(n, u) for n, u in candidates if u is not None and thresholds.get(n) is not None and u < thresholds[n]]
+        # Ordered cycling: walk order[] from current position, skip blocked accounts
+        idx = order.index(current) if current in order else 0
+        target = None
+        for i in range(1, len(order)):
+            candidate = order[(idx + i) % len(order)]
+            if not is_blocked(candidate, thresholds, locks, usage):
+                target = candidate
+                break
 
-        if under:
-            target, target_util = under[0]
-        else:
-            measured = [(n, u) for n, u in candidates if u is not None]
-            if not measured:
-                time.sleep(sleep_sec); continue
-            target, target_util = min(measured, key=lambda x: x[1])
-            log_event('all_over_threshold', selected=target, usage=target_util)
-            notify('relay', f'All accounts over threshold — switching to {target} ({target_util}%)')
-            do_switch(target)
-            time.sleep(sleep_sec); continue
+        if target is None:
+            # All candidates are locked + over threshold — stay put
+            log_event('all_blocked', current=current)
+            notify('relay', 'All accounts at limit — staying on current account')
+            time.sleep(sleep_sec)
+            continue
 
+        target_util = get_utilization(usage.get(target))
         log_event('switch', frm=current, to=target, usage=cur_util)
         notify('relay', f'switched {current} → {target} ({current} at {cur_util}%)')
         do_switch(target)
@@ -1422,6 +1446,87 @@ cmd_autoswitch() {
   esac
 }
 
+cmd_lock() {
+  local name="${1:-}"
+  local cfg="${RELAY_DIR}/autoswitch.json"
+
+  # No argument: show lock status
+  if [[ -z "${name}" ]]; then
+    hdr "Account locks"
+    if [[ ! -f "${cfg}" ]]; then
+      warn "No autoswitch config. Run: relay autoswitch config"
+      return 0
+    fi
+    "${PY}" - "${cfg}" <<'PYEOF'
+import json, sys
+cfg = json.load(open(sys.argv[1]))
+locks = cfg.get('locks', [])
+R='\033[0m'; B='\033[1m'; D='\033[2m'; YL='\033[33m'
+if not locks:
+    print(f'  {D}No accounts locked.{R}')
+else:
+    for name in locks:
+        print(f'  {YL}🔒{R}  {B}{name}{R}')
+print()
+PYEOF
+    return 0
+  fi
+
+  account_exists "${name}" || { err "Account '${name}' not found"; exit 1; }
+
+  # Ensure config file exists (create auto-default if missing)
+  if [[ ! -f "${cfg}" ]]; then
+    "${PY}" - "${CREDS_STORE}" "${cfg}" <<'PYEOF'
+import json, sys, os
+creds_dir, cfg_path = sys.argv[1], sys.argv[2]
+accounts = sorted(f[:-5] for f in os.listdir(creds_dir) if f.endswith('.json'))
+config = {
+    'order': accounts,
+    'thresholds': {a: 80 for a in accounts},
+    'locks': [],
+    'poll': {'low_minutes': 10, 'high_minutes': 2, 'high_threshold': 50}
+}
+json.dump(config, open(cfg_path, 'w'), indent=2)
+PYEOF
+    ok "Created default autoswitch config: ${cfg}"
+  fi
+
+  "${PY}" - "${cfg}" "${name}" <<'PYEOF'
+import json, sys
+cfg_path, name = sys.argv[1], sys.argv[2]
+cfg = json.load(open(cfg_path))
+locks = cfg.get('locks', [])
+if name in locks:
+    print(f'  already locked: {name}')
+    sys.exit(0)
+locks.append(name)
+cfg['locks'] = locks
+json.dump(cfg, open(cfg_path, 'w'), indent=2)
+PYEOF
+  ok "Locked '${B}${name}${R}' — won't be switched back to when over threshold"
+}
+
+cmd_unlock() {
+  local name="${1:-}"
+  [[ -z "${name}" ]] && { err "usage: relay unlock <name>"; exit 1; }
+  local cfg="${RELAY_DIR}/autoswitch.json"
+  [[ ! -f "${cfg}" ]] && { warn "No autoswitch config — nothing to unlock"; return 0; }
+
+  "${PY}" - "${cfg}" "${name}" <<'PYEOF'
+import json, sys
+cfg_path, name = sys.argv[1], sys.argv[2]
+cfg = json.load(open(cfg_path))
+locks = cfg.get('locks', [])
+if name not in locks:
+    print(f'  not locked: {name}')
+    sys.exit(0)
+locks.remove(name)
+cfg['locks'] = locks
+json.dump(cfg, open(cfg_path, 'w'), indent=2)
+PYEOF
+  ok "Unlocked '${B}${name}${R}'"
+}
+
 _script_dir() {
   # Resolve symlinks so we find package.json even when installed via npm/symlink
   local src="$0"
@@ -1676,6 +1781,8 @@ case "${CMD}" in
   rename|mv)        cmd_rename "$@" ;;
   sessions|sess)    cmd_sessions ;;
   autoswitch|as)    cmd_autoswitch "$@" ;;
+  lock)             cmd_lock "$@" ;;
+  unlock)           cmd_unlock "$@" ;;
   version|--version|-V) cmd_version ;;
   update)           cmd_update ;;
   install)          cmd_install ;;
