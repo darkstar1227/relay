@@ -1,6 +1,6 @@
 {
   "name": "@dst-justin/relay",
-  "version": "2.2.6",
+  "version": "2.2.7",
   "description": "Multi-account switcher for Claude Code — instant credential swap across macOS, Linux, and Windows",
   "bin": {
     "relay": "./relay.js"
