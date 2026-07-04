@@ -223,6 +223,9 @@ Sessions live in `~/.claude/projects/` and are shared across all accounts — af
 
 ## Changelog
 
+### v2.2.5 — 2026-07-04
+- `relay list -f` / `relay list --follow`: live-refresh mode — clears the screen and redraws the account table every 30 seconds, Ctrl+C to exit
+
 ### v2.2.4 — 2026-07-04
 - Fix: `relay switch` from another terminal no longer gets clobbered by a concurrent `relay list` / `!relay` menu run. Root cause: `try_refresh()` in the parallel usage-fetch used a stale snapshot of the current account, causing it to write the old account's refreshed token back to keychain and undo the switch. Now reads `CURRENT_FILE` freshly at write time.
 - Active sessions pick up an account switch on the next message without restarting

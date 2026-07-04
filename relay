@@ -394,6 +394,35 @@ cmd_quick() {
 }
 
 cmd_list() {
+  # -f / --follow: live-refresh mode
+  local follow=0
+  local passthrough=()
+  for arg in "$@"; do
+    if [[ "${arg}" == "-f" || "${arg}" == "--follow" ]]; then
+      follow=1
+    else
+      passthrough+=("${arg}")
+    fi
+  done
+
+  if [[ "${follow}" -eq 1 ]]; then
+    local interval=30
+    trap 'tput cnorm 2>/dev/null; printf "\n  \033[2mExited relay list -f\033[0m\n\n"; exit 0' INT TERM
+    tput civis 2>/dev/null || true
+    while true; do
+      printf '\033[2J\033[H'
+      hdr "Account List"
+      printf "  ${D}live · refreshes every ${interval}s · Ctrl+C to exit${R}\n\n"
+      _sync_current_creds
+      render_table full "${CREDS_STORE}" "${META_STORE}" "$(current_name)" "${passthrough[@]+"${passthrough[@]}"}"
+      echo ""
+      ok "Inside Claude Code: ${CY}!relay <index>${R} to switch"
+      printf "\n  ${D}updated $(date '+%H:%M:%S')${R}\n"
+      sleep "${interval}"
+    done
+    return
+  fi
+
   _check_update_bg
   hdr "Account List"
   _sync_current_creds
@@ -1574,6 +1603,7 @@ cmd_help() {
   printf "  %-32s %s\n" "  relay save <name>"        "save current login state"
   printf "  %-32s %s\n" "  relay rename <old> <new>" "rename an account"
   printf "  %-32s %s\n" "  relay list"               "full list with weekly usage"
+  printf "  %-32s %s\n" "  relay list -f"            "live-refresh list (Ctrl+C to exit)"
   printf "  %-32s %s\n" "  relay list --no-usage"    "list without querying API"
   printf "  %-32s %s\n" "  relay remove <name>"      "delete an account"
   printf "  %-32s %s\n" "  relay sessions"           "show all sessions"
