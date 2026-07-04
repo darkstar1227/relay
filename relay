@@ -432,7 +432,7 @@ cmd_list() {
   _show_update_notice
 }
 
-cmd_status() {
+_cmd_status_once() {
   _sync_current_creds
   local current; current=$(current_name)
   hdr "Current Status"
@@ -533,6 +533,29 @@ EOF
   [[ -d "${CLAUDE_DIR}/projects" ]] && \
     n=$(find "${CLAUDE_DIR}/projects" -name "*.jsonl" 2>/dev/null | wc -l | tr -d ' ')
   printf "\n  ${B}Sessions:${R} %s (shared across all accounts in ~/.claude/projects/)\n" "${n}"
+}
+
+cmd_status() {
+  local follow=0
+  for arg in "$@"; do
+    [[ "${arg}" == "-f" || "${arg}" == "--follow" ]] && follow=1
+  done
+
+  if [[ "${follow}" -eq 1 ]]; then
+    local interval=30
+    trap 'tput cnorm 2>/dev/null; printf "\n  \033[2mExited relay status -f\033[0m\n\n"; exit 0' INT TERM
+    tput civis 2>/dev/null || true
+    while true; do
+      printf '\033[2J\033[H'
+      printf "  ${D}live · refreshes every ${interval}s · Ctrl+C to exit${R}\n\n"
+      _cmd_status_once
+      printf "\n  ${D}updated $(date '+%H:%M:%S')${R}\n"
+      sleep "${interval}"
+    done
+    return
+  fi
+
+  _cmd_status_once
   _check_update_bg
   _show_update_notice
 }
@@ -1603,8 +1626,9 @@ cmd_help() {
   printf "  %-32s %s\n" "  relay save <name>"        "save current login state"
   printf "  %-32s %s\n" "  relay rename <old> <new>" "rename an account"
   printf "  %-32s %s\n" "  relay list"               "full list with weekly usage"
-  printf "  %-32s %s\n" "  relay list -f"            "live-refresh list (Ctrl+C to exit)"
+  printf "  %-32s %s\n" "  relay list -f"            "live-refresh mode (Ctrl+C to exit)"
   printf "  %-32s %s\n" "  relay list --no-usage"    "list without querying API"
+  printf "  %-32s %s\n" "  relay status -f"          "live-refresh current account status"
   printf "  %-32s %s\n" "  relay remove <name>"      "delete an account"
   printf "  %-32s %s\n" "  relay sessions"           "show all sessions"
   printf "  %-32s %s\n" "  relay version"             "show current version"

@@ -223,6 +223,9 @@ Sessions live in `~/.claude/projects/` and are shared across all accounts — af
 
 ## Changelog
 
+### v2.2.6 — 2026-07-04
+- `relay status -f` / `relay status --follow`: live-refresh current account status, same 30-second interval as `relay list -f`
+
 ### v2.2.5 — 2026-07-04
 - `relay list -f` / `relay list --follow`: live-refresh mode — clears the screen and redraws the account table every 30 seconds, Ctrl+C to exit
 
