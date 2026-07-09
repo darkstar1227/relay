@@ -1085,11 +1085,6 @@ def check_warmup(entries):
         if not os.path.exists(os.path.join(CREDS_DIR, acct + '.json')):
             log_event('warmup_pending', account=acct, reason='missing_account')
             continue
-        current_now = open(CURRENT_FILE).read().strip() if os.path.exists(CURRENT_FILE) else ''
-        if acct == current_now:
-            state[key] = {'date': today, 'status': 'already_active'}
-            log_event('warmup_skip', account=acct, reason='already_active')
-            changed = True; continue
         ok = do_warmup(acct)
         state[key] = {'date': today, 'status': 'ok' if ok else 'ping_failed'}
         changed = True
@@ -1881,7 +1876,7 @@ except Exception:
     state = {}
 labels = {
     'ok': '成功', 'ping_failed': 'ping 失敗', 'missed': '錯過',
-    'missing_account': '帳號不存在', 'already_active': '已在該帳號，跳過 ping',
+    'missing_account': '帳號不存在',
 }
 for e in entries:
     acct, hhmm = e.get('account'), e.get('time')
