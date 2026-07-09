@@ -852,7 +852,7 @@ _extract_daemon() {
   cat > "${AUTOSWITCH_DAEMON}" <<'DAEMON_EOF'
 #!/usr/bin/env python3
 """relay autoswitch daemon — runs in background, switches accounts by usage threshold."""
-import fcntl, json, os, sys, time, datetime, urllib.request, urllib.error, platform, subprocess, signal
+import fcntl, json, os, sys, time, datetime, urllib.request, urllib.error, platform, subprocess, signal, shutil
 from contextlib import contextmanager
 
 RELAY_DIR    = os.path.expanduser('~/.claude-relay')
@@ -865,6 +865,7 @@ CURRENT_FILE = os.path.join(RELAY_DIR, 'current')
 CREDS_DIR    = os.path.join(RELAY_DIR, 'credentials')
 CACHE_FILE   = os.path.join(RELAY_DIR, 'usage_cache.json')
 CACHE_TTL    = 120  # seconds — same as render_table
+WARMUP_STATE_FILE = os.path.join(RELAY_DIR, 'warmup_state.json')
 
 # ── lock ──────────────────────────────────────────────────────────
 def write_lock():
@@ -964,6 +965,75 @@ def do_switch(name):
         with open(CURRENT_FILE, 'w') as f: f.write(name)
         content = open(cred).read()
         kc_write(content)
+
+def load_warmup_state():
+    try: return json.load(open(WARMUP_STATE_FILE))
+    except: return {}
+
+def save_warmup_state(s):
+    save_json_atomic(WARMUP_STATE_FILE, s)
+
+def get_claude_bin():
+    try:
+        p = open(os.path.join(RELAY_DIR, 'claude_bin')).read().strip()
+        if p and os.path.exists(p): return p
+    except: pass
+    return shutil.which('claude') or 'claude'
+
+def do_warmup(acct):
+    current_before = open(CURRENT_FILE).read().strip() if os.path.exists(CURRENT_FILE) else ''
+    do_switch(acct)
+    log_event('warmup_switch', account=acct)
+    try:
+        r = subprocess.run([get_claude_bin(), '-p', 'ping', '--output-format', 'text'],
+                            capture_output=True, timeout=30)
+        ok = (r.returncode == 0)
+        log_event('warmup_ping', account=acct, ok=ok)
+        notify('relay', f'warmup: {acct} 已完成 5hr session 預熱' if ok
+                         else f'warmup: {acct} ping 失敗')
+        return ok
+    except Exception as e:
+        log_event('warmup_ping', account=acct, ok=False, err=str(e))
+        return False
+    finally:
+        if current_before and current_before != acct and os.path.exists(os.path.join(CREDS_DIR, current_before + '.json')):
+            do_switch(current_before)
+            log_event('warmup_restore', account=current_before)
+
+def check_warmup(entries):
+    if not entries: return
+    state = load_warmup_state()
+    now = datetime.datetime.now()
+    today = now.strftime('%Y-%m-%d')
+    changed = False
+    for entry in entries:
+        acct, hhmm = entry.get('account'), entry.get('time')
+        if not acct or not hhmm: continue
+        key = f'{acct}|{hhmm}'
+        if (state.get(key) or {}).get('date') == today:
+            continue
+        try:
+            h, m = map(int, hhmm.split(':'))
+            scheduled = now.replace(hour=h, minute=m, second=0, microsecond=0)
+        except: continue
+        if now < scheduled:
+            continue
+        if (now - scheduled).total_seconds() > 900:  # 15 min grace window
+            state[key] = {'date': today, 'status': 'missed'}
+            log_event('warmup_missed', account=acct, time=hhmm)
+            changed = True; continue
+        if not os.path.exists(os.path.join(CREDS_DIR, acct + '.json')):
+            log_event('warmup_pending', account=acct, reason='missing_account')
+            continue
+        current_now = open(CURRENT_FILE).read().strip() if os.path.exists(CURRENT_FILE) else ''
+        if acct == current_now:
+            state[key] = {'date': today, 'status': 'already_active'}
+            log_event('warmup_skip', account=acct, reason='already_active')
+            changed = True; continue
+        ok = do_warmup(acct)
+        state[key] = {'date': today, 'status': 'ok' if ok else 'ping_failed'}
+        changed = True
+    if changed: save_warmup_state(state)
 
 # ── usage fetch ───────────────────────────────────────────────────
 def load_cache():
@@ -1069,6 +1139,18 @@ def clear_manual_switch():
     except: pass
 
 # ── main loop ─────────────────────────────────────────────────────
+def load_raw_config():
+    """Read autoswitch.json's raw contents, or {} if missing/corrupt. Used so
+    'warmup' entries work even when load_config()'s auto-default path (which
+    omits 'warmup') would otherwise apply."""
+    try:
+        return json.load(open(CONFIG_FILE))
+    except FileNotFoundError:
+        return {}
+    except Exception as e:
+        log_event('config_parse_error', error=str(e))
+        return {}
+
 def load_config():
     try:
         return json.load(open(CONFIG_FILE))
@@ -1103,6 +1185,9 @@ def main():
             last_refresh_ts = time.time()
 
         cfg = load_config()
+        raw_cfg = load_raw_config()
+        if raw_cfg.get('warmup_enabled', True):
+            check_warmup(raw_cfg.get('warmup', []))
         if not cfg:
             time.sleep(60); continue
 
