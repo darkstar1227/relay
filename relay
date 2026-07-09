@@ -933,10 +933,15 @@ def load_cache():
     try: return json.load(open(CACHE_FILE))
     except: return {}
 
-def save_cache(c):
+def save_json_atomic(path, data):
     try:
-        with open(CACHE_FILE, 'w') as f: json.dump(c, f)
+        tmp = path + '.tmp'
+        with open(tmp, 'w') as f: json.dump(data, f)
+        os.replace(tmp, path)
     except: pass
+
+def save_cache(c):
+    save_json_atomic(CACHE_FILE, c)
 
 # ponytail: intentional copy of try_refresh() — daemon is a standalone extracted script
 def try_refresh_daemon(name, cred_path):
