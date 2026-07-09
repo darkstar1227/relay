@@ -16,6 +16,16 @@
 
 ---
 
+## P3 — Warmup scheduling: `relay warmup test` is a non-functional stub
+
+**What:** `relay warmup test <account>` (relay, `cmd_warmup_test()`) prints that it's switching/pinging/restoring, but never actually calls `do_warmup()` — it always ends in a warning explaining it's not wired up yet.
+
+**Why:** `do_warmup()` lives inside the daemon's extracted Python heredoc (`_extract_daemon()`'s output file), not directly callable from the bash CLI process. Wiring this up needs either extracting the daemon module path and shelling out to it, or duplicating `do_warmup()`'s logic in the CLI's own Python invocations. Deferred at implementation time (2026-07-09) as a P2/nice-to-have per the implementation plan's Task 5 note — flagged again by the final `codex exec review` pass on the same date (the stub does print an honest warning rather than a silent false-positive, so severity is low, but it currently gives zero real self-diagnosis value).
+
+**Fix:** Locate `AUTOSWITCH_DAEMON` path resolution (used by `_extract_daemon()`), ensure the daemon has been extracted at least once (run `_extract_daemon` if the file doesn't exist yet), then shell out via `"${py}" -c "import sys; sys.path.insert(0, '<dir>'); from <daemon_module> import do_warmup; do_warmup('<account>')"` or equivalent.
+
+---
+
 ## P3 — Warmup scheduling: timezone awareness
 
 **What:** `relay warmup` entries store `HH:MM` and are matched against `datetime.now()` (machine local time). No explicit timezone handling.
