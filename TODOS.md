@@ -16,6 +16,16 @@
 
 ---
 
+## P3 — Warmup scheduling: timezone awareness
+
+**What:** `relay warmup` entries store `HH:MM` and are matched against `datetime.now()` (machine local time). No explicit timezone handling.
+
+**Why:** Deferred from the warmup scheduling CEO review (2026-07-09) — not in original scope discussion, and a laptop's system clock already adjusts when the user travels, so the existing behavior is correct for the common case. Only becomes a real gap if someone runs the daemon on a machine that stays in a fixed timezone while the user's actual working hours shift (e.g. a home server, or explicit UTC scheduling needs).
+
+**Fix (if ever needed):** Add an optional `tz` field per warmup entry, resolved via `zoneinfo`, defaulting to system local time when absent.
+
+---
+
 ## P3 — Cache file lock
 
 **What:** Add a file lock around `save_cache()` to prevent concurrent JSON write corruption.
