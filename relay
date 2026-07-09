@@ -1677,6 +1677,202 @@ PYEOF
   ok "Unlocked '${B}${name}${R}'"
 }
 
+cmd_warmup() {
+  local sub="${1:-}"; [[ $# -gt 0 ]] && shift
+  case "${sub}" in
+    add)     cmd_warmup_add "$@" ;;
+    remove|rm) cmd_warmup_remove "$@" ;;
+    list|ls) cmd_warmup_list ;;
+    pause)   cmd_warmup_pause ;;
+    resume)  cmd_warmup_resume ;;
+    test)    cmd_warmup_test "$@" ;;
+    *)       cmd_warmup_list ;;
+  esac
+}
+
+_warmup_ensure_config() {
+  local cfg="${RELAY_DIR}/autoswitch.json"
+  if [[ ! -f "${cfg}" ]]; then
+    "${PY}" - "${CREDS_STORE}" "${cfg}" <<'PYEOF'
+import json, sys, os
+creds_dir, cfg_path = sys.argv[1], sys.argv[2]
+accounts = sorted(f[:-5] for f in os.listdir(creds_dir) if f.endswith('.json')) if os.path.isdir(creds_dir) else []
+config = {
+    'order': accounts,
+    'thresholds': {a: 80 for a in accounts},
+    'locks': [],
+    'poll': {'low_minutes': 10, 'high_minutes': 2, 'high_threshold': 50},
+    'warmup': []
+}
+json.dump(config, open(cfg_path, 'w'), indent=2)
+PYEOF
+  fi
+}
+
+_warmup_daemon_running() {
+  local pid; pid=$(cat "${RELAY_DIR}/autoswitch.lock" 2>/dev/null || echo "")
+  [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null
+}
+
+_warmup_valid_time() {
+  [[ "$1" =~ ^([0-1][0-9]|2[0-3]):[0-5][0-9]$ ]]
+}
+
+cmd_warmup_add() {
+  local name="${1:-}" hhmm="${2:-}"
+  if [[ -z "${name}" || -z "${hhmm}" ]]; then
+    err "usage: relay warmup add <account> <HH:MM>"
+    exit 1
+  fi
+  account_exists "${name}" || {
+    err "Account '${name}' not found — run 'relay list' to see accounts, or 'relay add ${name}' first"
+    exit 1
+  }
+  _warmup_valid_time "${hhmm}" || {
+    err "Invalid time '${hhmm}' — expected HH:MM, 00:00–23:59 (e.g. 06:00)"
+    exit 1
+  }
+
+  _warmup_ensure_config
+  local cfg="${RELAY_DIR}/autoswitch.json"
+
+  "${PY}" - "${cfg}" "${name}" "${hhmm}" <<'PYEOF'
+import json, sys
+cfg_path, name, hhmm = sys.argv[1], sys.argv[2], sys.argv[3]
+cfg = json.load(open(cfg_path))
+entries = cfg.get('warmup', [])
+if not any(e.get('account') == name and e.get('time') == hhmm for e in entries):
+    entries.append({'account': name, 'time': hhmm})
+cfg['warmup'] = entries
+json.dump(cfg, open(cfg_path, 'w'), indent=2)
+PYEOF
+
+  ok "warmup: ${name} will fire at ${hhmm}"
+  echo "  Warmup runs a real, non-interactive 'claude -p ping' call to Anthropic's API"
+  echo "  on your machine in the background at the scheduled time — it does not send"
+  echo "  your credentials anywhere, and it does not increase your weekly usage cap."
+  echo "  It only starts your rolling 5-hour usage window earlier."
+  if ! _warmup_daemon_running; then
+    warn "background daemon isn't running — this won't fire until you run: relay autoswitch start"
+  fi
+}
+
+cmd_warmup_remove() {
+  local name="${1:-}" hhmm="${2:-}"
+  if [[ -z "${name}" ]]; then
+    err "usage: relay warmup remove <account> [HH:MM]"
+    exit 1
+  fi
+  local cfg="${RELAY_DIR}/autoswitch.json"
+  [[ -f "${cfg}" ]] || { warn "No warmup entries for '${name}'"; return 0; }
+
+  local removed
+  if ! removed=$("${PY}" - "${cfg}" "${name}" "${hhmm}" <<'PYEOF'
+import json, sys
+cfg_path, name, hhmm = sys.argv[1], sys.argv[2], (sys.argv[3] or None)
+cfg = json.load(open(cfg_path))
+entries = cfg.get('warmup', [])
+if hhmm:
+    remaining = [e for e in entries if not (e.get('account') == name and e.get('time') == hhmm)]
+else:
+    remaining = [e for e in entries if e.get('account') != name]
+removed = len(entries) - len(remaining)
+cfg['warmup'] = remaining
+json.dump(cfg, open(cfg_path, 'w'), indent=2)
+print(removed)
+PYEOF
+); then
+    err "Failed to remove warmup entries for '${name}'"
+    return 1
+  fi
+  if [[ "${removed}" -eq 0 ]]; then
+    if [[ -n "${hhmm}" ]]; then
+      warn "No warmup entries for '${name}' at ${hhmm}"
+    else
+      warn "No warmup entries for '${name}'"
+    fi
+    return 0
+  fi
+  ok "Removed warmup entries for '${name}'"
+}
+
+cmd_warmup_list() {
+  local cfg="${RELAY_DIR}/autoswitch.json"
+  hdr "warmup"
+
+  if _warmup_daemon_running; then :; else
+    printf "  ${YL}daemon: not running${R} — run 'relay autoswitch start'\n"
+  fi
+
+  [[ -f "${cfg}" ]] || { warn "No warmup entries. Run: relay warmup add <account> <HH:MM>"; return 0; }
+
+  "${PY}" - "${cfg}" "${RELAY_DIR}/warmup_state.json" <<'PYEOF'
+import json, sys
+cfg = json.load(open(sys.argv[1]))
+if not cfg.get('warmup_enabled', True):
+    print('  \033[33m⏸ warmup paused\033[0m — run \'relay warmup resume\' to re-enable')
+entries = cfg.get('warmup', [])
+if not entries:
+    print('  No warmup entries. Run: relay warmup add <account> <HH:MM>')
+    sys.exit(0)
+try:
+    state = json.load(open(sys.argv[2]))
+except Exception:
+    state = {}
+labels = {
+    'ok': '成功', 'ping_failed': 'ping 失敗', 'missed': '錯過',
+    'missing_account': '帳號不存在', 'already_active': '已在該帳號，跳過 ping',
+}
+for e in entries:
+    acct, hhmm = e.get('account'), e.get('time')
+    rec = state.get(f'{acct}|{hhmm}')
+    if rec:
+        status = labels.get(rec.get('status'), rec.get('status'))
+        print(f"  {acct:<12} {hhmm}   最後: {rec.get('date')} {status}")
+    else:
+        print(f"  {acct:<12} {hhmm}   尚未觸發")
+PYEOF
+}
+
+cmd_warmup_pause() {
+  _warmup_ensure_config
+  local cfg="${RELAY_DIR}/autoswitch.json"
+  "${PY}" - "${cfg}" <<'PYEOF'
+import json, sys
+cfg_path = sys.argv[1]
+cfg = json.load(open(cfg_path))
+cfg['warmup_enabled'] = False
+json.dump(cfg, open(cfg_path, 'w'), indent=2)
+PYEOF
+  ok "warmup paused — entries kept, run 'relay warmup resume' to re-enable"
+}
+
+cmd_warmup_resume() {
+  local cfg="${RELAY_DIR}/autoswitch.json"
+  [[ -f "${cfg}" ]] || { err "No warmup config. Run: relay warmup add <account> <HH:MM> first"; exit 1; }
+  "${PY}" - "${cfg}" <<'PYEOF'
+import json, sys
+cfg_path = sys.argv[1]
+cfg = json.load(open(cfg_path))
+cfg['warmup_enabled'] = True
+json.dump(cfg, open(cfg_path, 'w'), indent=2)
+PYEOF
+  ok "warmup resumed"
+}
+
+cmd_warmup_test() {
+  local name="${1:-}"
+  [[ -z "${name}" ]] && { err "usage: relay warmup test <account>"; exit 1; }
+  account_exists "${name}" || { err "Account '${name}' not found"; exit 1; }
+  hdr "warmup — test"
+  log "Switching to '${name}', pinging, then restoring your current account..."
+  "${PY}" - "${name}" <<'PYEOF'
+import sys, os
+sys.path.insert(0, os.path.expanduser('~/.claude-relay'))
+PYEOF
+  warn "relay warmup test requires the daemon module — run this from an environment where the daemon has been extracted (relay autoswitch start at least once), then re-run this command."
+}
+
 _script_dir() {
   # Resolve symlinks so we find package.json even when installed via npm/symlink
   local src="$0"
@@ -1894,6 +2090,12 @@ cmd_help() {
   printf "  %-32s %s\n" "  relay autoswitch config"   "set up auto-switching"
   printf "  %-32s %s\n" "  relay autoswitch start/stop" "manage background daemon"
   printf "  %-32s %s\n" "  relay autoswitch status"   "daemon state + thresholds"
+  echo ""
+  printf "  ${B}Warmup${R}\n"
+  printf "  %-32s %s\n" "  relay warmup add <acct> <HH:MM>" "pre-warm an account's 5hr window daily"
+  printf "  %-32s %s\n" "  relay warmup remove <acct> [HH:MM]" "remove a warmup schedule"
+  printf "  %-32s %s\n" "  relay warmup list"         "show scheduled warmups + last result"
+  printf "  %-32s %s\n" "  relay warmup pause/resume" "suspend/re-enable without deleting"
   printf "  %-32s %s\n" "  relay lock <name>"         "prevent account from cycling back when over limit"
   printf "  %-32s %s\n" "  relay unlock <name>"       "remove lock"
   printf "  %-32s %s\n" "  relay lock"                "show locked accounts"
@@ -1936,6 +2138,7 @@ case "${CMD}" in
   autoswitch|as)    cmd_autoswitch "$@" ;;
   lock)             cmd_lock "$@" ;;
   unlock)           cmd_unlock "$@" ;;
+  warmup)           cmd_warmup "$@" ;;
   version|--version|-V) cmd_version ;;
   update)           cmd_update ;;
   install)          cmd_install ;;
