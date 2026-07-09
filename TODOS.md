@@ -26,6 +26,8 @@
 
 ---
 
+**RESOLVED (2026-07-09, warmup implementation):** see Task 1 of docs/plans/2026-07-09-warmup-scheduling-implementation.md — save_json_atomic() now used by save_cache().
+
 ## P3 — Cache file lock
 
 **What:** Add a file lock around `save_cache()` to prevent concurrent JSON write corruption.

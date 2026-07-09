@@ -166,6 +166,10 @@ Prefix commands with `!` to run them inline:
 | `relay autoswitch stop` | Stop and remove daemon |
 | `relay autoswitch status` | Daemon state and per-account thresholds |
 | `relay autoswitch log` | Recent auto-switch history |
+| `relay warmup add <account> <HH:MM>` | Schedule an account warmup time |
+| `relay warmup remove <account> [HH:MM]` | Remove one or all warmup times for an account |
+| `relay warmup list` | Show configured warmup schedules |
+| `relay warmup pause` / `relay warmup resume` | Temporarily pause or resume warmups |
 
 ## Autoswitch
 
@@ -193,6 +197,34 @@ relay autoswitch status   # verify it's running
 - No config file = autoswitch disabled entirely.
 - Manual switches (`!relay work`) are respected until that account hits its threshold.
 - If all accounts are over threshold, relay switches to the least-used one.
+
+## Warmup
+
+Warmup runs a real, non-interactive `claude -p ping` call to Anthropic's API on your machine in the background at the scheduled time — it does not send your credentials anywhere, and it does not increase your weekly usage cap. It only starts your rolling 5-hour usage window earlier.
+
+Use warmup when you want an account's 5-hour usage window to start before you sit down to work.
+
+```bash
+relay warmup add <account> <HH:MM>     # e.g. relay warmup add work 06:00
+relay warmup remove <account> [HH:MM]
+relay warmup list
+relay warmup pause
+relay warmup resume
+```
+
+Warmup requires the autoswitch daemon to be running (`relay autoswitch start`) to actually fire. `relay warmup add` warns if the daemon is not running.
+
+**Config shape** (`~/.claude-relay/autoswitch.json`):
+
+```json
+{
+  "warmup_enabled": true,
+  "warmup": [
+    { "account": "work", "time": "06:00" },
+    { "account": "personal", "time": "08:30" }
+  ]
+}
+```
 
 ## How It Works
 
