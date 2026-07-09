@@ -60,23 +60,33 @@ err()  { printf "  ${RD}✗${R} %s\n" "$*" >&2; }
 hdr()  { printf "\n${B}${MG}  %s${R}\n  ${D}─────────────────────────────────────${R}\n" "$*"; }
 
 with_credential_lock() {
-  # Serializes credential/CURRENT_FILE writes across all relay processes
-  # (CLI switch, autoswitch daemon, warmup). Uses flock(1) if available,
-  # falls back to a simple mkdir-based lock on systems without it.
   local lockfile="${RELAY_DIR}/credential.lock"
-  if command -v flock >/dev/null 2>&1; then
-    (
-      flock -x 200
-      "$@"
-    ) 200>"${lockfile}"
-  else
-    local lockdir="${lockfile}.d"
-    while ! mkdir "${lockdir}" 2>/dev/null; do sleep 0.05; done
+  local ready_fifo="${TMPDIR:-/tmp}/relay-lock-ready.$$"
+  local release_fifo="${TMPDIR:-/tmp}/relay-lock-release.$$"
+  if ! mkfifo "${ready_fifo}" "${release_fifo}" 2>/dev/null; then
     "$@"
-    local status=$?
-    rmdir "${lockdir}" 2>/dev/null
-    return "${status}"
+    return $?
   fi
+
+  "${PY}" -c '
+import fcntl, sys
+lockfile, ready_fifo, release_fifo = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(lockfile, "a") as f:
+    fcntl.flock(f, fcntl.LOCK_EX)
+    open(ready_fifo, "w").close()
+    open(release_fifo, "r").read()
+' "${lockfile}" "${ready_fifo}" "${release_fifo}" &
+  local holder_pid=$!
+
+  : < "${ready_fifo}"
+
+  "$@"
+  local status=$?
+
+  : > "${release_fifo}"
+  wait "${holder_pid}" 2>/dev/null
+  rm -f "${ready_fifo}" "${release_fifo}"
+  return "${status}"
 }
 
 mkdir -p "${CREDS_STORE}" "${META_STORE}" "${CLAUDE_DIR}"
@@ -1122,9 +1132,9 @@ def try_refresh_daemon(name, cred_path):
         content = json.dumps(d)
         open(cred_path, 'w').write(content)
         os.chmod(cred_path, 0o600)
-        current = open(CURRENT_FILE).read().strip() if os.path.exists(CURRENT_FILE) else ''
-        if name == current:
-            with credential_lock():
+        with credential_lock():
+            current = open(CURRENT_FILE).read().strip() if os.path.exists(CURRENT_FILE) else ''
+            if name == current:
                 kc_write(content)  # critical: update keychain so do_switch() doesn't clobber
         return oauth['accessToken']
     except Exception:
