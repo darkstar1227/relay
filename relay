@@ -1238,6 +1238,14 @@ cmd_autoswitch_start() {
   }
 
   hdr "autoswitch — start"
+  if [[ -n "${REAL_CLAUDE}" && "${REAL_CLAUDE}" != "$0" ]]; then
+    echo "${REAL_CLAUDE}" > "${RELAY_DIR}/claude_bin"
+  elif [[ -z "${REAL_CLAUDE}" ]]; then
+    warn "claude not found; warmup will fall back to daemon PATH lookup and may fail"
+  else
+    warn "claude resolves to relay wrapper; warmup will fall back to daemon PATH lookup and may fail"
+  fi
+
   _extract_daemon
   log "Daemon extracted to ${AUTOSWITCH_DAEMON}"
 
