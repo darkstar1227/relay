@@ -295,6 +295,19 @@ DX DUAL VOICES — CONSENSUS TABLE:
 | 29 | DX/UserRaised(via review) | Add `relay warmup test <account>` self-diagnosis command | CONFIRMED, added to scope | P2 (small, same file, real gap — testing plan's own step 3 otherwise requires hand-editing state files) | Claude subagent finding | — |
 | 30 | DX/DualVoices | Add README `## Warmup` section + Changelog entry to scope (mandatory per CLAUDE.md publish checklist) | CONFIRMED, added to scope | P1 | Claude subagent: plan never mentioned README despite this repo's own CLAUDE.md requiring it for every version bump | — |
 
+## Post-implementation: `codex exec review` findings (2026-07-09)
+
+Run against the merged implementation (base `43d74ba`). Found 2 P1s (both fixed in code, not just documented), 1 P2 (design tradeoff, resolved by reversing decision #23), 1 P3 (filed to TODOS.md).
+
+| # | Phase | Decision | Classification | Principle | Rationale | Rejected |
+|---|-------|----------|-----------------|-----------|-----------|----------|
+| 31 | PostImpl/CodexReview | **Reverses decision #23.** Remove the `already_active` skip in `check_warmup()` — always ping on fire, even if the scheduled account is already current | User-confirmed after codex review | — | Codex: "currently selected" doesn't imply "recently pinged" — an account left active overnight with no messages sent would silently skip its actual pre-warm. User chose correctness over the near-zero API-call savings | Rejected: keep the skip (original decision #23's rationale no longer holds once the concrete failure mode was shown) |
+| 32 | PostImpl/CodexReview | Fix credential lock mechanism mismatch: bash's `with_credential_lock()` (mkdir fallback on macOS, since `flock(1)` is absent) never actually synchronized against the Python daemon's `credential_lock()` (always `fcntl.flock`) — two independent primitives on the same file. Unified both to delegate to the same `fcntl.flock` via a FIFO-synchronized python holder process | CONFIRMED, critical fix | P1 | Codex: this defeated Task 2's entire purpose on any machine without `flock(1)` installed (confirmed true on this machine). Verified with a real cross-process contention test (bash blocks on a genuine python-held lock for its full duration) | — |
+| 33 | PostImpl/CodexReview | Fix TOCTOU race in `try_refresh_daemon()` — move the `CURRENT_FILE` read inside `credential_lock()` so the check-then-write is atomic | CONFIRMED, mechanical fix | P1 | Codex: reading `current` before acquiring the lock left a race window where a concurrent switch could make the check stale | — |
+| 34 | PostImpl/CodexReview | File TODOS.md entry for non-functional `relay warmup test` stub rather than fix now | Deferred to TODOS.md | P3 | Already a known, documented limitation (implementation plan Task 5 Step 6) — stub prints an honest warning, not a silent false positive; low severity | Deferred |
+
+**Note on #31/#32/#33:** these were caught by running `codex exec review --base 43d74ba` (the "review everything after all tasks" step) *after* the 7 implementation tasks were already merged — this is exactly why that final pass matters even when every individual task passed its own spec/quality review: cross-cutting issues (a lock mechanism split across two languages; a design assumption that only breaks under a specific timing gap) don't show up until the whole diff is reviewed together.
+
 ## GSTACK REVIEW REPORT
 
 Run via `/autoplan` on 2026-07-09, branch `main`, commit range starting `ec29c47`.
@@ -305,7 +318,7 @@ Run via `/autoplan` on 2026-07-09, branch `main`, commit range starting `ec29c47
 | Eng | Codex + Claude subagent | issues_open→resolved | 11 decisions logged (#14–24, incl. 2 user-raised) | 3 (credential race, 7-day health schema defect, account-switch UX) |
 | DX | Codex + Claude subagent | issues_open→resolved | 6 decisions logged (#25–30) | 2 (daemon-not-running silent failure, missing README/disclosure copy) |
 
-**VERDICT:** APPROVED. Design is implementation-ready. The one pre-implementation gate — verifying `claude -p "ping"` actually advances the `five_hour` window — is DONE (2026-07-09, direct API check on the `work` account: `resets_at` jumped a full 5h forward, utilization reset to 2%, timed right as the prior window expired). Everything else in this report is already folded into the design above.
+**VERDICT:** APPROVED, IMPLEMENTED, AND SHIPPED (2026-07-09). The pre-implementation gate — verifying `claude -p "ping"` actually advances the `five_hour` window — passed (direct API check on the `work` account: `resets_at` jumped a full 5h forward, utilization reset to 2%, timed right as the prior window expired). All 7 implementation tasks landed on `main`, and a post-implementation `codex exec review` pass caught and fixed 2 additional P1 bugs plus 1 P2 design reversal (see "Post-implementation" section above) — everything in this report is folded into the design and the shipped code.
 
 **Notable finding surfaced regardless of consensus:** Codex (single voice) flagged quota/ToS optics risk. Researched via WebSearch — publicly documented technique, official CLI automation is ToS-exempt, doesn't raise the weekly cap. User accepted the residual risk with a disclosure requirement attached (decision #9, #27).
 
