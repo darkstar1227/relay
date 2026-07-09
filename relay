@@ -59,6 +59,26 @@ warn() { printf "  ${YL}⚠${R} %s\n" "$*"; }
 err()  { printf "  ${RD}✗${R} %s\n" "$*" >&2; }
 hdr()  { printf "\n${B}${MG}  %s${R}\n  ${D}─────────────────────────────────────${R}\n" "$*"; }
 
+with_credential_lock() {
+  # Serializes credential/CURRENT_FILE writes across all relay processes
+  # (CLI switch, autoswitch daemon, warmup). Uses flock(1) if available,
+  # falls back to a simple mkdir-based lock on systems without it.
+  local lockfile="${RELAY_DIR}/credential.lock"
+  if command -v flock >/dev/null 2>&1; then
+    (
+      flock -x 200
+      "$@"
+    ) 200>"${lockfile}"
+  else
+    local lockdir="${lockfile}.d"
+    while ! mkdir "${lockdir}" 2>/dev/null; do sleep 0.05; done
+    "$@"
+    local status=$?
+    rmdir "${lockdir}" 2>/dev/null
+    return "${status}"
+  fi
+}
+
 mkdir -p "${CREDS_STORE}" "${META_STORE}" "${CLAUDE_DIR}"
 chmod 700 "${RELAY_DIR}" "${CREDS_STORE}" 2>/dev/null || true
 
@@ -354,6 +374,10 @@ EOF
 # Core switch logic
 # ══════════════════════════════════════════════════════════════════
 do_switch() {
+  with_credential_lock _do_switch_locked "$@"
+}
+
+_do_switch_locked() {
   local name="$1"
   local current; current=$(current_name)
 
@@ -828,11 +852,13 @@ _extract_daemon() {
   cat > "${AUTOSWITCH_DAEMON}" <<'DAEMON_EOF'
 #!/usr/bin/env python3
 """relay autoswitch daemon — runs in background, switches accounts by usage threshold."""
-import json, os, sys, time, datetime, urllib.request, urllib.error, platform, subprocess, signal
+import fcntl, json, os, sys, time, datetime, urllib.request, urllib.error, platform, subprocess, signal
+from contextlib import contextmanager
 
 RELAY_DIR    = os.path.expanduser('~/.claude-relay')
 CONFIG_FILE  = os.path.join(RELAY_DIR, 'autoswitch.json')
 LOCK_FILE    = os.path.join(RELAY_DIR, 'autoswitch.lock')
+CREDENTIAL_LOCK_FILE = os.path.join(RELAY_DIR, 'credential.lock')
 LOG_FILE     = os.path.join(RELAY_DIR, 'autoswitch.log')
 MANUAL_FILE  = os.path.join(RELAY_DIR, 'manual_switch')
 CURRENT_FILE = os.path.join(RELAY_DIR, 'current')
@@ -917,16 +943,27 @@ def kc_write(content):
         with open(live, 'w') as f: f.write(content)
         os.chmod(live, 0o600)
 
+@contextmanager
+def credential_lock():
+    os.makedirs(RELAY_DIR, exist_ok=True)
+    with open(CREDENTIAL_LOCK_FILE, 'w') as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
 def do_switch(name):
-    cred = os.path.join(CREDS_DIR, name + '.json')
-    current = open(CURRENT_FILE).read().strip() if os.path.exists(CURRENT_FILE) else ''
-    if current and os.path.exists(os.path.join(CREDS_DIR, current + '.json')):
-        live = kc_read()
-        if live:
-            with open(os.path.join(CREDS_DIR, current + '.json'), 'w') as f: f.write(live)
-    with open(CURRENT_FILE, 'w') as f: f.write(name)
-    content = open(cred).read()
-    kc_write(content)
+    with credential_lock():
+        cred = os.path.join(CREDS_DIR, name + '.json')
+        current = open(CURRENT_FILE).read().strip() if os.path.exists(CURRENT_FILE) else ''
+        if current and os.path.exists(os.path.join(CREDS_DIR, current + '.json')):
+            live = kc_read()
+            if live:
+                with open(os.path.join(CREDS_DIR, current + '.json'), 'w') as f: f.write(live)
+        with open(CURRENT_FILE, 'w') as f: f.write(name)
+        content = open(cred).read()
+        kc_write(content)
 
 # ── usage fetch ───────────────────────────────────────────────────
 def load_cache():
@@ -967,7 +1004,8 @@ def try_refresh_daemon(name, cred_path):
         os.chmod(cred_path, 0o600)
         current = open(CURRENT_FILE).read().strip() if os.path.exists(CURRENT_FILE) else ''
         if name == current:
-            kc_write(content)  # critical: update keychain so do_switch() doesn't clobber
+            with credential_lock():
+                kc_write(content)  # critical: update keychain so do_switch() doesn't clobber
         return oauth['accessToken']
     except Exception:
         return None
