@@ -36,7 +36,7 @@ New state file `~/.claude-relay/warmup_state.json`, keyed by `"<account>|<HH:MM>
 }
 ```
 
-`status` ∈ `ok`, `ping_failed`, `missed`, `missing_account`, `already_active`. One record per key per day — once a key has a record for today, it's not touched again until the next day (except `missing_account`, see below, which retries within the grace window instead of gating).
+`status` ∈ `ok`, `ping_failed`, `missed`, `already_active`. One record per key per day — once a key has a record for today, it's not touched again until the next day. `missing_account` is not a stored status — see below: it never writes to this file at all, so a pending-but-not-yet-existing account retries every poll within the grace window with zero state persisted.
 
 **Multiple accounts scheduled at/near the same time (user-raised, revised in this review).** `check_warmup()`'s `for entry in entries` loop processes due entries one at a time within a single poll — each does its own switch → ping → restore before the next entry starts, so N accounts due in the same poll cycle never interfere with each other's credentials, but do serialize: worst case N × 30s of daemon-loop blocking in that one poll (negligible against a 15-minute grace window for any realistic N of a handful of accounts). **Cheaper fix for the common sub-case (user-raised):** if the scheduled account is already the currently active account when its slot comes due, skip the switch/ping/restore dance entirely — mark `already_active` and move on. This is a different, near-zero-cost check than the CEO-phase-rejected "is the window still fresh" idea (decision #6, which needed a `five_hour` timestamp lookup); this one only compares against `CURRENT_FILE`, which `check_warmup()` already has to read.
 
@@ -144,8 +144,8 @@ def check_warmup(entries):
             log_event('warmup_missed', account=acct, time=hhmm)
             changed = True; continue
         if not os.path.exists(os.path.join(CREDS_DIR, acct + '.json')):
-            state[key] = {'date': today, 'status': 'missing_account'}
-            changed = True; continue
+            log_event('warmup_pending', account=acct, reason='missing_account')
+            continue  # deliberately no state[key] write — retries every poll until grace window elapses (see #18)
         current_now = open(CURRENT_FILE).read().strip() if os.path.exists(CURRENT_FILE) else ''
         if acct == current_now:
             # Already the active account — a real session is presumably already
@@ -191,7 +191,7 @@ def do_warmup(acct):
 
 Key behaviors:
 - **No catch-up firing.** If the daemon didn't check in within 15 minutes of the scheduled time (offline, sleeping laptop, etc.), that day's slot is marked `missed` and skipped — it does not fire late.
-- **Once per key per day.** The `date` field on a state record gates all outcomes (`ok`/`ping_failed`/`missed`/`missing_account`) equally, so a fired-but-failed ping also isn't retried until tomorrow.
+- **Once per key per day.** The `date` field on a state record gates `ok`/`ping_failed`/`missed`/`already_active` equally, so a fired-but-failed ping also isn't retried until tomorrow. `missing_account` is the one exception — it never writes a state record, so it isn't gated at all (see the correction above).
 - **Ping cost.** `claude -p "ping" --output-format text` is a minimal one-shot non-interactive call — no interactive session, exits immediately after the response.
 - All outcomes are logged via the existing `log_event`/`autoswitch.log` and surfaced via the existing `notify()` desktop notification, matching current switch-event UX.
 
