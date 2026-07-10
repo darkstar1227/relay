@@ -1286,6 +1286,22 @@ def load_raw_config():
         log_event('config_parse_error', error=str(e))
         return {}
 
+def _read_order(creds_dir):
+    order_file = os.path.join(os.path.dirname(creds_dir), 'order')
+    on_disk = set(f[:-5] for f in os.listdir(creds_dir) if f.endswith('.json')) if os.path.isdir(creds_dir) else set()
+    ordered = []
+    if os.path.exists(order_file):
+        for line in open(order_file):
+            n = line.strip()
+            if n in on_disk and n not in ordered:
+                ordered.append(n)
+    for n in sorted(on_disk):
+        if n not in ordered:
+            ordered.append(n)
+    with open(order_file, 'w') as f:
+        f.write('\n'.join(ordered) + ('\n' if ordered else ''))
+    return ordered
+
 def load_config():
     try:
         return json.load(open(CONFIG_FILE))
@@ -1293,7 +1309,7 @@ def load_config():
         # Auto-default: 2+ accounts → enable with 80% threshold, no explicit config needed
         if not os.path.isdir(CREDS_DIR):
             return None
-        accounts = sorted(f[:-5] for f in os.listdir(CREDS_DIR) if f.endswith('.json'))
+        accounts = _read_order(CREDS_DIR)
         if len(accounts) < 2:
             return None
         return {
