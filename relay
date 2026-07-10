@@ -1767,6 +1767,43 @@ cmd_autoswitch() {
   esac
 }
 
+cmd_reorder() {
+  hdr "reorder accounts"
+
+  local accounts=()
+  local name
+  while IFS= read -r name; do accounts+=("${name}"); done < <(list_account_names)
+
+  if [[ ${#accounts[@]} -eq 0 ]]; then
+    err "No accounts found. Run: relay add <name>"
+    exit 1
+  fi
+
+  local order_str; order_str=$(prompt_reorder "${accounts[@]}")
+
+  if [[ -z "${order_str}" ]]; then
+    err "No valid order given — nothing changed"
+    exit 1
+  fi
+
+  local order_arr=()
+  IFS=',' read -ra order_arr <<< "${order_str}"
+  printf '%s\n' "${order_arr[@]}" > "${ORDER_FILE}"
+  ok "Order saved to ${ORDER_FILE}"
+
+  local cfg="${RELAY_DIR}/autoswitch.json"
+  if [[ -f "${cfg}" ]]; then
+    "${PY}" - "${cfg}" "${order_str}" <<'PYEOF'
+import json, sys
+cfg_path, order_str = sys.argv[1], sys.argv[2]
+cfg = json.load(open(cfg_path))
+cfg['order'] = order_str.split(',')
+json.dump(cfg, open(cfg_path, 'w'), indent=2)
+PYEOF
+    ok "Also updated order in ${cfg}"
+  fi
+}
+
 cmd_lock() {
   local name="${1:-}"
   local cfg="${RELAY_DIR}/autoswitch.json"
@@ -2271,6 +2308,7 @@ cmd_help() {
   printf "  %-32s %s\n" "  relay refresh-all"        "silent OAuth refresh for all accounts"
   printf "  %-32s %s\n" "  relay save <name>"        "save current login state"
   printf "  %-32s %s\n" "  relay rename <old> <new>" "rename an account"
+  printf "  %-32s %s\n" "  relay reorder"            "change account display/switch order"
   printf "  %-32s %s\n" "  relay list"               "full list with weekly usage"
   printf "  %-32s %s\n" "  relay list -f"            "live-refresh mode (Ctrl+C to exit)"
   printf "  %-32s %s\n" "  relay list --no-usage"    "list without querying API"
@@ -2329,6 +2367,7 @@ case "${CMD}" in
   status|st)        cmd_status ;;
   remove|rm|del)    cmd_remove "$@" ;;
   rename|mv)        cmd_rename "$@" ;;
+  reorder)          cmd_reorder "$@" ;;
   sessions|sess)    cmd_sessions ;;
   autoswitch|as)    cmd_autoswitch "$@" ;;
   lock)             cmd_lock "$@" ;;
