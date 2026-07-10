@@ -12,6 +12,7 @@ RELAY_DIR="${HOME}/.claude-relay"
 CREDS_STORE="${RELAY_DIR}/credentials"
 META_STORE="${RELAY_DIR}/meta"
 CURRENT_FILE="${RELAY_DIR}/current"
+ORDER_FILE="${RELAY_DIR}/order"
 UPDATE_CACHE="${RELAY_DIR}/.update_cache"
 CLAUDE_DIR="${HOME}/.claude"
 CLAUDE_JSON="${HOME}/.claude.json"
@@ -99,13 +100,39 @@ account_creds()  { echo "${CREDS_STORE}/$1.json"; }
 account_meta()   { echo "${META_STORE}/$1"; }
 account_exists() { [[ -f "$(account_creds "$1")" ]]; }
 
-# list accounts sorted, one per line (bash 3.2 compatible)
+# list accounts in canonical add-order, one per line (bash 3.2 compatible).
+# Self-healing: drops names whose credential file is gone, appends any
+# credential file not yet tracked (alphabetically), and rewrites ORDER_FILE.
 list_account_names() {
-  local f
-  for f in "${CREDS_STORE}"/*.json; do
-    [[ -f "${f}" ]] || continue
-    basename "${f}" .json
-  done | sort
+  local on_disk=() name f
+
+  while IFS= read -r name; do
+    on_disk+=("${name}")
+  done < <(for f in "${CREDS_STORE}"/*.json; do [[ -f "${f}" ]] || continue; basename "${f}" .json; done | sort)
+
+  local ordered=()
+  if [[ -f "${ORDER_FILE}" ]]; then
+    while IFS= read -r name; do
+      [[ -z "${name}" ]] && continue
+      account_exists "${name}" && ordered+=("${name}")
+    done < "${ORDER_FILE}"
+  fi
+
+  local acct tracked
+  for acct in ${on_disk[@]+"${on_disk[@]}"}; do
+    tracked=0
+    for name in ${ordered[@]+"${ordered[@]}"}; do
+      [[ "${name}" == "${acct}" ]] && { tracked=1; break; }
+    done
+    [[ "${tracked}" -eq 0 ]] && ordered+=("${acct}")
+  done
+
+  if [[ ${#ordered[@]} -gt 0 ]]; then
+    printf '%s\n' "${ordered[@]}" > "${ORDER_FILE}"
+    printf '%s\n' "${ordered[@]}"
+  else
+    : > "${ORDER_FILE}"
+  fi
 }
 
 account_by_index() {
