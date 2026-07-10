@@ -255,6 +255,14 @@ Sessions live in `~/.claude/projects/` and are shared across all accounts — af
 
 ## Changelog
 
+### v2.3.0 — 2026-07-10
+- Add scheduled warmup: `relay warmup add/remove/list/pause/resume` to pre-warm a 5hr session at set times
+- Daemon warmup engine (`check_warmup`/`do_warmup`) fires scheduled warmups; always pings (`claude -p ping`) on fire rather than skipping when the account looks "already active" — an idle-overnight account was silently missing its pre-warm
+- Daemon now records the resolved `claude` binary path at autoswitch start, so it can find it regardless of the daemon's runtime PATH
+- Add warmup health warning to `relay status`
+- Fix: unify the cross-process credential lock across bash and Python — the bash mkdir-based fallback (used on macOS, which lacks `flock(1)`) never actually synchronized against the daemon's `fcntl.flock()`, defeating the lock's purpose; also fixes a TOCTOU race in token refresh where the current-account file was read before the lock was acquired
+- Refactor: atomic JSON writes for the daemon usage cache, preventing corruption from concurrent writes
+
 ### v2.2.7 — 2026-07-05
 - `relay lock <name>` / `relay unlock <name>`: lock an account so it won't be cycled back to when over its usage threshold
 - `relay lock` (no args): show locked accounts
