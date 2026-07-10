@@ -141,6 +141,32 @@ list_account_names() {
   fi
 }
 
+# append name to ORDER_FILE if not already tracked (used by add/save)
+add_to_order() {
+  local name="$1"
+  touch "${ORDER_FILE}"
+  grep -Fxq "${name}" "${ORDER_FILE}" 2>/dev/null && return 0
+  echo "${name}" >> "${ORDER_FILE}"
+}
+
+# remove name's line from ORDER_FILE (used by remove)
+remove_from_order() {
+  local name="$1"
+  [[ -f "${ORDER_FILE}" ]] || return 0
+  local tmp="${ORDER_FILE}.tmp.$$"
+  grep -Fxv "${name}" "${ORDER_FILE}" > "${tmp}" 2>/dev/null || : > "${tmp}"
+  mv "${tmp}" "${ORDER_FILE}"
+}
+
+# rename a tracked entry in place, preserving its position (used by rename)
+rename_in_order() {
+  local old="$1" new="$2"
+  [[ -f "${ORDER_FILE}" ]] || return 0
+  local tmp="${ORDER_FILE}.tmp.$$"
+  awk -v old="${old}" -v new="${new}" '{ print ($0 == old) ? new : $0 }' "${ORDER_FILE}" > "${tmp}"
+  mv "${tmp}" "${ORDER_FILE}"
+}
+
 account_by_index() {
   local idx="$1" i=1 name
   while IFS= read -r name; do
@@ -731,6 +757,7 @@ cmd_add() {
   printf '%s' "${kc_creds}" > "$(account_creds "${name}")"
   chmod 600 "$(account_creds "${name}")"
   save_meta_email "${name}"
+  add_to_order "${name}"
   echo "${name}" > "${CURRENT_FILE}"
   ok "Account '${B}${name}${R}' added  ${D}$(get_meta_email "${name}")${R}"
 }
@@ -753,6 +780,7 @@ cmd_save() {
   [[ ${saved} -eq 0 ]] && { err "No credentials found — log in first with: claude /login"; exit 1; }
 
   save_meta_email "${name}"
+  add_to_order "${name}"
   echo "${name}" > "${CURRENT_FILE}"
   ok "Account '${B}${name}${R}' saved  ${D}$(get_meta_email "${name}")${R}"
 }
@@ -851,6 +879,7 @@ cmd_remove() {
   read -r c
   [[ "${c}" = "y" || "${c}" = "Y" ]] || { log "cancelled"; return 0; }
   rm -f "$(account_creds "${name}")" "$(account_meta "${name}")"
+  remove_from_order "${name}"
   [[ "$(current_name)" == "${name}" ]] && rm -f "${CURRENT_FILE}"
   ok "Deleted '${name}' (sessions are unaffected)"
 }
@@ -933,6 +962,7 @@ cmd_rename() {
 
   mv "$(account_creds "${old}")" "$(account_creds "${new}")"
   [[ -f "$(account_meta "${old}")" ]] && mv "$(account_meta "${old}")" "$(account_meta "${new}")"
+  rename_in_order "${old}" "${new}"
   [[ "$(current_name)" == "${old}" ]] && echo "${new}" > "${CURRENT_FILE}"
   ok "Renamed '${B}${old}${R}' → '${B}${new}${R}'"
 }
