@@ -112,9 +112,15 @@ list_account_names() {
 
   local ordered=()
   if [[ -f "${ORDER_FILE}" ]]; then
+    local existing already
     while IFS= read -r name; do
       [[ -z "${name}" ]] && continue
-      account_exists "${name}" && ordered+=("${name}")
+      account_exists "${name}" || continue
+      already=0
+      for existing in ${ordered[@]+"${ordered[@]}"}; do
+        [[ "${existing}" == "${name}" ]] && { already=1; break; }
+      done
+      [[ "${already}" -eq 0 ]] && ordered+=("${name}")
     done < "${ORDER_FILE}"
   fi
 
