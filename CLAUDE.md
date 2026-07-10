@@ -13,6 +13,7 @@ Everything lives in one bash script, `relay` (~1800 lines, macOS bash 3.2 compat
 - Command dispatch is a single `case` at the bottom of the file (search `cmd_<name>` for each subcommand's implementation).
 - The autoswitch daemon is Python, embedded as a heredoc inside `relay` (`_extract_daemon()`) and written out to `~/.claude-relay/autoswitch-daemon.py` at install time. It's managed via a macOS launchd plist or Linux systemd user service — there is no separate daemon source file in this repo.
 - Credentials: macOS uses Keychain (service `Claude Code-credentials`); Linux uses `~/.claude/.credentials.json`. Relay's own per-account store lives at `~/.claude-relay/credentials/<name>.json`.
+- Account display/switch order is persisted in `~/.claude-relay/order` (one name per line, add-order) — this is the single source of truth for ordering; every listing/index/autoswitch-default path reads it instead of sorting filenames. Self-healing: stale entries are dropped and untracked credential files are appended automatically. Use `relay reorder` to change it.
 - Gotcha: on macOS, `relay` deliberately prefers `/usr/bin/python3` over a Homebrew python3 — the system Python uses the correct TLS cert store, Homebrew's often doesn't (see comment at `relay:19-25`).
 
 Known issues and in-flight design context: see `TODOS.md` and `docs/plans/*.md`.
