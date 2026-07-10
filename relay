@@ -1788,6 +1788,25 @@ cmd_reorder() {
 
   local order_arr=()
   IFS=',' read -ra order_arr <<< "${order_str}"
+
+  local account ordered found
+  for account in ${accounts[@]+"${accounts[@]}"}; do
+    found=0
+    for ordered in ${order_arr[@]+"${order_arr[@]}"}; do
+      [[ "${ordered}" == "${account}" ]] && { found=1; break; }
+    done
+    [[ "${found}" -eq 0 ]] && order_arr+=("${account}")
+  done
+
+  order_str=""
+  for ordered in ${order_arr[@]+"${order_arr[@]}"}; do
+    if [[ -z "${order_str}" ]]; then
+      order_str="${ordered}"
+    else
+      order_str="${order_str},${ordered}"
+    fi
+  done
+
   printf '%s\n' "${order_arr[@]}" > "${ORDER_FILE}"
   ok "Order saved to ${ORDER_FILE}"
 
