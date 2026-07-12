@@ -1452,6 +1452,44 @@ if __name__ == '__main__':
     main()
 DAEMON_EOF
   chmod 755 "${AUTOSWITCH_DAEMON}"
+  _read_version > "${RELAY_DIR}/daemon_version"
+}
+
+# Restarts the already-installed daemon service in place (launchd/systemd/cron),
+# without touching plist/service file contents. Used after a silent redeploy.
+_restart_daemon_service() {
+  if [[ "$(uname)" == "Darwin" ]] && [[ -f "${AUTOSWITCH_PLIST}" ]]; then
+    launchctl unload "${AUTOSWITCH_PLIST}" 2>/dev/null || true
+    launchctl load "${AUTOSWITCH_PLIST}"
+  elif command -v systemctl >/dev/null 2>&1 && [[ -f "${AUTOSWITCH_SERVICE}" ]]; then
+    systemctl --user restart relay-autoswitch
+  else
+    # cron fallback: no long-lived unit to restart — kill the running instance so
+    # the next cron tick (daemon's own lock file) starts a fresh copy of the file
+    # we just wrote via _extract_daemon.
+    local pid; pid=$(cat "${RELAY_DIR}/autoswitch.lock" 2>/dev/null || echo "")
+    [[ -n "${pid}" ]] && kill "${pid}" 2>/dev/null || true
+  fi
+}
+
+# Runs on every invocation (cheap no-op unless autoswitch is actually running):
+# if relay itself was updated (npm/git/direct) since the daemon file on disk was
+# generated, silently regenerate it from the current script and restart it —
+# so daemon-side fixes (warmup engine, credential lock, etc.) don't require the
+# user to remember to run `relay autoswitch start` again after every update.
+_maybe_redeploy_daemon() {
+  [[ -f "${AUTOSWITCH_DAEMON}" ]] || return 0
+  local pid; pid=$(cat "${RELAY_DIR}/autoswitch.lock" 2>/dev/null || echo "")
+  [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null || return 0
+
+  local deployed; deployed=$(cat "${RELAY_DIR}/daemon_version" 2>/dev/null || echo "")
+  local current; current=$(_read_version)
+  [[ "${current}" == "unknown" ]] && return 0
+  [[ "${deployed}" == "${current}" ]] && return 0
+
+  _extract_daemon
+  _restart_daemon_service
+  warn "relay updated to ${current} — autoswitch daemon redeployed and restarted"
 }
 
 cmd_autoswitch_config() {
@@ -2357,6 +2395,8 @@ cmd_help() {
   _check_update_bg
   _show_update_notice
 }
+
+_maybe_redeploy_daemon
 
 # ══════════════════════════════════════════════════════════════════
 # Dispatch — single entry point, no fall-through
