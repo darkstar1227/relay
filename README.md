@@ -1,4 +1,4 @@
-# relay
+<p align="center"><img src="assets/banner.png" alt="relay" width="600"></p>
 
 A lightweight CLI tool for switching between multiple Claude Code accounts instantly.
 

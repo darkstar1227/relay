@@ -1,4 +1,4 @@
-# relay
+<p align="center"><img src="assets/banner.png" alt="relay" width="600"></p>
 
 Claude Code 多帳號快速切換工具。
 
