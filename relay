@@ -14,8 +14,12 @@ META_STORE="${RELAY_DIR}/meta"
 CURRENT_FILE="${RELAY_DIR}/current"
 ORDER_FILE="${RELAY_DIR}/order"
 UPDATE_CACHE="${RELAY_DIR}/.update_cache"
+PROVIDERS_STORE="${RELAY_DIR}/providers"
+ACTIVE_PROVIDER_FILE="${RELAY_DIR}/active_provider"
+SETTINGS_ENV_SNAPSHOT="${RELAY_DIR}/settings_env_snapshot.json"
 CLAUDE_DIR="${HOME}/.claude"
 CLAUDE_JSON="${HOME}/.claude.json"
+CLAUDE_SETTINGS="${CLAUDE_DIR}/settings.json"
 REAL_CLAUDE=$(command -v claude 2>/dev/null || echo "")
 # macOS: /usr/bin/python3 uses the system TLS stack (correct certs);
 # /usr/local/bin/python3 (Homebrew/standalone) often lacks bundled certs → SSL failures
@@ -90,8 +94,8 @@ with open(lockfile, "a") as f:
   return "${status}"
 }
 
-mkdir -p "${CREDS_STORE}" "${META_STORE}" "${CLAUDE_DIR}"
-chmod 700 "${RELAY_DIR}" "${CREDS_STORE}" 2>/dev/null || true
+mkdir -p "${CREDS_STORE}" "${META_STORE}" "${PROVIDERS_STORE}" "${CLAUDE_DIR}"
+chmod 700 "${RELAY_DIR}" "${CREDS_STORE}" "${PROVIDERS_STORE}" 2>/dev/null || true
 
 [[ -z "${PY}" ]] && { err "python3 is required"; exit 1; }
 
@@ -99,6 +103,29 @@ current_name()   { [[ -f "${CURRENT_FILE}" ]] && cat "${CURRENT_FILE}" || echo "
 account_creds()  { echo "${CREDS_STORE}/$1.json"; }
 account_meta()   { echo "${META_STORE}/$1"; }
 account_exists() { [[ -f "$(account_creds "$1")" ]]; }
+
+provider_file()   { echo "${PROVIDERS_STORE}/$1.json"; }
+provider_exists() { [[ -f "$(provider_file "$1")" ]]; }
+active_provider_name() { [[ -f "${ACTIVE_PROVIDER_FILE}" ]] && cat "${ACTIVE_PROVIDER_FILE}" || echo ""; }
+
+# list providers alphabetically, one per line (bash 3.2 compatible)
+list_provider_names() {
+  local f
+  for f in "${PROVIDERS_STORE}"/*.json; do
+    [[ -f "${f}" ]] || continue
+    basename "${f}" .json
+  done | sort
+}
+
+# read one string field from a provider's JSON file; "" if absent
+_provider_field() {
+  "${PY}" -c 'import json,sys; print(json.load(open(sys.argv[1])).get(sys.argv[2],"") or "")' "$(provider_file "$1")" "$2"
+}
+
+# "1" if the provider has discover_models truthy, else ""
+_provider_discover() {
+  "${PY}" -c 'import json,sys; print("1" if json.load(open(sys.argv[1])).get("discover_models") else "")' "$(provider_file "$1")"
+}
 
 # list accounts in canonical add-order, one per line (bash 3.2 compatible).
 # Self-healing: drops names whose credential file is gone, appends any
