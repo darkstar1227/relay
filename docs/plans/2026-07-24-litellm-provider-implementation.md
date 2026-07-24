@@ -172,8 +172,7 @@ _provider_discover() {
 ```bash
 export RELAY_TEST_HOME=$(mktemp -d)/relayhome
 HOME="${RELAY_TEST_HOME}" bash -c '
-  source <(sed -n "1,101p" /Users/ds-anxing/GitHub/relay/relay)
-  mkdir -p "${PROVIDERS_STORE}"
+  eval "$(sed -n "1,2402p" /Users/ds-anxing/GitHub/relay/relay)"
   printf "%s" "{\"base_url\":\"http://localhost:4000\",\"auth_token\":\"sk-test\",\"model\":\"claude-sonnet-4-5\",\"discover_models\":true}" > "$(provider_file demo)"
   echo "exists: $(provider_exists demo && echo yes || echo no)"
   echo "list: $(list_provider_names)"
@@ -193,7 +192,7 @@ base_url: http://localhost:4000
 model: claude-sonnet-4-5
 discover: [1]
 ```
-(`source <(sed -n "1,101p" ...)` pulls in just the constants/helpers defined through line 101 — later tasks' verification steps use the same technique with an updated line range as functions are added below line 101.)
+`eval "$(sed -n "1,2402p" relay)"` sources every top-level statement and function definition up through just before the `CMD="${1:-}"` dispatch line (relay:2404 per Task 0's anchor) without ever executing the dispatch `case` block — this is the same technique every later task in this plan uses (see Task 3's note), and it already runs `mkdir -p "${PROVIDERS_STORE}"` as part of the script's own startup (relay:93, edited by Step 2 above), so no manual `mkdir` is needed here. Do not use a small hand-counted line range (e.g. `sed -n "1,101p"`) — it's fragile and, worse, would stop short of the very functions Step 3 just added.
 
 - [ ] **Step 5: Commit**
 
@@ -647,8 +646,6 @@ _settings_env_restore() { with_credential_lock _settings_env_restore_locked; }
 
 (Both heredocs use the quoted `<<'EOF'` form — no shell expansion inside — and duplicate the small `MANAGED`/`load_json`/`atomic_write` core rather than sharing it, consistent with this codebase's existing convention of duplicating small logic across embedded heredocs instead of factoring a shared module; see the "ponytail" comment at relay:628 for a precedent.)
 
-Note the `$(_settings_json_core)` splice at the top of each heredoc: it's a plain function call substituted into the script text before the `<<EOF` heredoc is read by the shell (this heredoc is **not** quoted — `<<EOF`, not `<<'EOF'` — specifically so the substitution happens; the rest of each script has no `$variable`/backtick syntax the shell could misinterpret, only Python). This avoids duplicating the `MANAGED`/`load_json`/`atomic_write` definitions between `activate` and `restore`.
-
 - [ ] **Step 2: Verify — fresh file, first activation snapshots absence**
 
 ```bash
@@ -1052,7 +1049,7 @@ This test needs a real account credential file (contents don't matter — `do_sw
 export RELAY_TEST_HOME=$(mktemp -d)/relayhome
 mkdir -p "${RELAY_TEST_HOME}/.claude"
 printf '%s' '{"env":{"FOO":"bar","ANTHROPIC_BASE_URL":"https://my-own-gateway","ANTHROPIC_AUTH_TOKEN":"my-own-key"}}' > "${RELAY_TEST_HOME}/.claude/settings.json"
-HOME="${RELAY_TEST_HOME}" bash -c '
+HOME="${RELAY_TEST_HOME}" timeout 10 bash -c '
   eval "$(sed -n "1,2402p" /Users/ds-anxing/GitHub/relay/relay)"
   # stub the Keychain-touching functions for this test only
   kc_write() { :; }
@@ -1065,14 +1062,15 @@ HOME="${RELAY_TEST_HOME}" bash -c '
   mkdir -p "${CREDS_STORE}"
   printf "%s" "{}" > "$(account_creds work)"
   add_to_order work
-  timeout 10 bash -c "do_switch work" || { echo "TIMED OUT — likely a lock deadlock regression"; exit 1; }
+  do_switch work
 
   echo "after switch — active: [$(active_provider_name)]"
   echo "settings.json: $(cat "${CLAUDE_SETTINGS}")"
 '
+echo "exit: $?"
 rm -rf "$(dirname "${RELAY_TEST_HOME}")"
 ```
-Expected (and completes within the 10s timeout, not hanging): `before switch — active: mylitellm`, `after switch — active: []`, and `settings.json` shows `env` restored to **exactly** `{"FOO":"bar","ANTHROPIC_BASE_URL":"https://my-own-gateway","ANTHROPIC_AUTH_TOKEN":"my-own-key"}` — the pre-existing gateway config, not merely cleared. The `timeout 10` wrapper is a deliberate regression guard: if a future edit accidentally swaps in the lock-acquiring `_settings_env_restore` here, this test hangs instead of silently passing.
+Expected (and completes within the 10s timeout, not hanging — `exit: 0`): `before switch — active: mylitellm`, `after switch — active: []`, and `settings.json` shows `env` restored to **exactly** `{"FOO":"bar","ANTHROPIC_BASE_URL":"https://my-own-gateway","ANTHROPIC_AUTH_TOKEN":"my-own-key"}` — the pre-existing gateway config, not merely cleared. The `timeout 10` wraps the *entire* `bash -c` invocation (not a nested `bash -c` inside it — a nested one wouldn't have `do_switch`/`kc_write`/etc. defined, since child processes don't inherit a parent shell's function definitions). This is a deliberate regression guard: if a future edit accidentally swaps in the lock-acquiring `_settings_env_restore` here, the whole script hangs and `timeout` kills it (`exit: 124`) instead of silently passing.
 
 - [ ] **Step 3: Commit**
 
