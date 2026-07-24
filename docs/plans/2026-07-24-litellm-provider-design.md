@@ -30,6 +30,8 @@ Modes 1 and 2 are mutually exclusive: switching one clears the other's active ma
 
 ## Storage
 
+**Implementation note:** `relay` already defines `CLAUDE_DIR="${HOME}/.claude"` (relay:17). All references to `~/.claude/settings.json` below resolve to `${CLAUDE_DIR}/settings.json` — reuse the existing constant, don't hardcode a new literal path.
+
 `~/.claude-relay/providers/<name>.json`, chmod 600 — same convention as `~/.claude-relay/credentials/<name>.json`:
 
 ```json
@@ -64,6 +66,7 @@ Modes 1 and 2 are mutually exclusive: switching one clears the other's active ma
   1. Read `~/.claude/settings.json`, delete exactly the 4 keys above from `env` (leave everything else, including any of the user's own unrelated env entries, untouched).
   2. Delete `~/.claude-relay/active_provider`.
   3. Prints confirmation. Whatever subscription account is currently in Keychain silently resumes being "what's active" (it was never touched).
+- **No `provider edit`/`update` command in v1.** Changing an existing provider's `base_url`/`token`/`model`/`discover_models` means `relay provider remove <name>` then `relay provider add <name> ...` again. Consistent with keeping v1 minimal; can be added later if re-adding proves annoying in practice.
 - `relay run <name> [-- <claude args...>]`
   Dispatch on which store `<name>` is found in:
   - **account:** call the same switch path `relay <name>` uses, then `exec claude "$@"`.
