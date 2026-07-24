@@ -4,7 +4,7 @@
 
 **Goal:** Let `relay` manage LiteLLM-backed model providers (add/list/use/off/remove) alongside its existing subscription-account switching, plus a `relay run <name>` command that launches a single `claude` session pinned to a specific account or provider without touching any global state.
 
-**Architecture:** Subscription accounts (unchanged) swap OAuth credentials into Keychain/`credentials.json`. Providers (new) are a second, mutually-exclusive global mode that merges/clears four keys in `${CLAUDE_DIR}/settings.json`'s `env` block via embedded-Python JSON read-modify-write — same pattern the script already uses everywhere else for JSON. `relay run` bypasses both global mechanisms for a one-off session: for an account it's sugar for switch-then-exec; for a provider it uses `claude --settings '<inline JSON>'`, a session-scoped CLI override verified (see design doc) to be immune to concurrent global-state changes.
+**Architecture:** Subscription accounts (unchanged) swap OAuth credentials into Keychain/`credentials.json`. Providers (new) are a second, mutually-exclusive global mode that manages four keys in `${CLAUDE_DIR}/settings.json`'s `env` block. Per a Codex adversarial review of the initial design, this is not a simple merge/delete: every activation **fully replaces** the managed key set (never a partial merge, so a sparse provider can't inherit a prior provider's leftover keys), the **pre-relay original values are snapshotted once and restored** on full exit from provider mode (so a user's own pre-existing gateway config is never silently destroyed), and every mutation is **atomic (temp-file + rename) and serialized through the same lock `do_switch` already uses** (so a concurrent account-switch and `provider use` can't race each other into an inconsistent state). `relay run` bypasses both global mechanisms for a one-off session: for an account it's sugar for switch-then-exec; for a provider it uses `claude --settings '<inline JSON>'`, a session-scoped CLI override verified (see design doc) to be immune to concurrent global-state changes.
 
 **Tech Stack:** bash 3.2 (macOS-compatible), Python 3 (embedded heredocs via `${PY}`), no formal test framework — verification is manual/scripted shell runs via the Bash tool, following this repo's existing convention (see `docs/plans/2026-07-10-account-order-fix-implementation.md`).
 
@@ -78,7 +78,7 @@ Expected output (line numbers must match exactly, or stop and re-read the file b
 - Modify: `relay:98-101` (add accessor functions alongside the account ones)
 
 **Interfaces:**
-- Produces: `PROVIDERS_STORE`, `ACTIVE_PROVIDER_FILE`, `CLAUDE_SETTINGS` (constants); `provider_file(name)`, `provider_exists(name)`, `list_provider_names()`, `active_provider_name()`, `_provider_field(name, key)`, `_provider_discover(name)` (functions) — used by every later task in this plan.
+- Produces: `PROVIDERS_STORE`, `ACTIVE_PROVIDER_FILE`, `SETTINGS_ENV_SNAPSHOT`, `CLAUDE_SETTINGS` (constants); `provider_file(name)`, `provider_exists(name)`, `list_provider_names()`, `active_provider_name()`, `_provider_field(name, key)`, `_provider_discover(name)` (functions) — used by every later task in this plan.
 
 - [ ] **Step 1: Add constants**
 
@@ -104,10 +104,13 @@ ORDER_FILE="${RELAY_DIR}/order"
 UPDATE_CACHE="${RELAY_DIR}/.update_cache"
 PROVIDERS_STORE="${RELAY_DIR}/providers"
 ACTIVE_PROVIDER_FILE="${RELAY_DIR}/active_provider"
+SETTINGS_ENV_SNAPSHOT="${RELAY_DIR}/settings_env_snapshot.json"
 CLAUDE_DIR="${HOME}/.claude"
 CLAUDE_JSON="${HOME}/.claude.json"
 CLAUDE_SETTINGS="${CLAUDE_DIR}/settings.json"
 ```
+
+`SETTINGS_ENV_SNAPSHOT` holds the pre-relay original state of the 4 managed keys — see Task 5.
 
 - [ ] **Step 2: Create the providers directory at startup**
 
@@ -486,42 +489,66 @@ EOF
 
 ---
 
-### Task 5: settings.json env merge/clear helpers
+### Task 5: settings.json env ownership — snapshot, atomic activate/restore, shared lock
 
 **Files:**
-- Modify: `relay` — add `PROVIDER_ENV_KEYS`, `_settings_env_merge()`, `_settings_env_clear()` near the other helper functions (immediately after `require_claude`, currently relay:263-267).
+- Modify: `relay` — add `PROVIDER_ENV_KEYS`, `_settings_env_activate_locked()`, `_settings_env_activate()`, `_settings_env_restore_locked()`, `_settings_env_restore()` near the other helper functions (immediately after `require_claude`, currently relay:263-267). Both `_locked`-suffixed functions assume the caller already holds `with_credential_lock`'s lock (relay:63); the two unsuffixed wrappers acquire it themselves.
 
 **Interfaces:**
-- Consumes: `CLAUDE_SETTINGS` (Task 1), `${PY}`.
-- Produces: `_settings_env_merge(KEY=VALUE...)` (returns non-zero and prints to stderr on malformed JSON), `_settings_env_clear()` (removes exactly `PROVIDER_ENV_KEYS` from the `env` block, no-op if file/keys absent) — consumed by Tasks 6, 7, 9.
+- Consumes: `CLAUDE_SETTINGS`, `SETTINGS_ENV_SNAPSHOT` (Task 1), `${PY}`, `with_credential_lock` (relay:63, pre-existing).
+- Produces:
+  - `_settings_env_activate_locked(KEY=VALUE...)` / `_settings_env_activate(KEY=VALUE...)` — fully replaces the 4 managed keys with exactly the given pairs; snapshots the pre-relay original values the first time it's called since the last full restore. Non-zero exit + stderr message on malformed JSON.
+  - `_settings_env_restore_locked()` / `_settings_env_restore()` — restores the snapshotted values/absences (or clears the 4 keys if no snapshot exists), then deletes the snapshot.
+  - Consumed by: Task 6 (`activate`), Task 7 (`restore`), Task 9 (`restore_locked`, called from *inside* an already-held lock — never the locking wrapper, to avoid deadlock).
 
-This is the highest-risk piece (it edits a file Claude Code itself depends on), so its own verification step covers: fresh file, pre-existing unrelated keys, malformed JSON, and idempotent clear.
+This is the highest-risk piece in the whole plan (it edits a file Claude Code itself depends on, and got 3 findings in an adversarial review of the original design), so its verification step is the most thorough in this plan: fresh file, pre-existing unrelated keys, pre-existing *managed* keys (the snapshot/restore case), malformed JSON, provider-to-provider full-replace (no leakage), and idempotent restore.
 
-- [ ] **Step 1: Add the constant and both functions**
+- [ ] **Step 1: Add the constant and all four functions**
 
 Insert immediately after `require_claude() { ... }` (relay:263-267):
 ```bash
 PROVIDER_ENV_KEYS=(ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_MODEL CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY)
 
-# merge KEY=VALUE pairs into ${CLAUDE_SETTINGS}'s "env" object, preserving
-# every other key in the file. Creates the file if absent.
-_settings_env_merge() {
-  "${PY}" - "${CLAUDE_SETTINGS}" "$@" <<'EOF'
-import json, sys, os
+# Fully replace the 4 managed keys with exactly the given KEY=VALUE pairs.
+# Snapshots the pre-relay original values/absences the first time this is
+# called since the last full restore (SETTINGS_ENV_SNAPSHOT doesn't exist).
+# Assumes the caller already holds the credential lock.
+_settings_env_activate_locked() {
+  "${PY}" - "${CLAUDE_SETTINGS}" "${SETTINGS_ENV_SNAPSHOT}" "$@" <<'EOF'
+import json, os, sys, tempfile
 
-path = sys.argv[1]
-pairs = sys.argv[2:]
+MANAGED = ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_MODEL", "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"]
 
-if os.path.exists(path):
-    raw = open(path).read().strip()
+def load_json(p, default):
+    if not os.path.exists(p):
+        return default
+    raw = open(p).read().strip()
+    return json.loads(raw) if raw else default
+
+def atomic_write(p, data, mode=0o600):
+    d = os.path.dirname(p) or "."
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".relay-tmp-")
     try:
-        data = json.loads(raw) if raw else {}
-    except json.JSONDecodeError as e:
-        print(f"settings.json is not valid JSON: {e}", file=sys.stderr)
-        sys.exit(1)
-else:
-    data = {}
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, indent=2)
+            f.write("\n")
+        os.chmod(tmp, mode)
+        os.replace(tmp, p)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
+path, snapshot_path = sys.argv[1], sys.argv[2]
+pairs = sys.argv[3:]
+
+try:
+    data = load_json(path, {})
+except json.JSONDecodeError as e:
+    print(f"settings.json is not valid JSON: {e}", file=sys.stderr)
+    sys.exit(1)
 if not isinstance(data, dict):
     print("settings.json root is not a JSON object", file=sys.stderr)
     sys.exit(1)
@@ -529,92 +556,165 @@ if not isinstance(data, dict):
 env = data.get("env")
 if not isinstance(env, dict):
     env = {}
+
+if not os.path.exists(snapshot_path):
+    snapshot = {k: env.get(k) for k in MANAGED}
+    atomic_write(snapshot_path, snapshot, 0o600)
+
+for k in MANAGED:
+    env.pop(k, None)
 for pair in pairs:
     k, _, v = pair.partition("=")
     env[k] = v
 data["env"] = env
-
-with open(path, "w") as f:
-    json.dump(data, f, indent=2)
-    f.write("\n")
+atomic_write(path, data, 0o600)
 EOF
 }
+_settings_env_activate() { with_credential_lock _settings_env_activate_locked "$@"; }
 
-# remove exactly PROVIDER_ENV_KEYS from ${CLAUDE_SETTINGS}'s "env" object,
-# leaving every other key (including unrelated env entries) untouched.
-# No-op if the file doesn't exist or none of the keys are present.
-_settings_env_clear() {
-  "${PY}" - "${CLAUDE_SETTINGS}" "${PROVIDER_ENV_KEYS[@]}" <<'EOF'
-import json, sys, os
+# Restore the snapshotted values/absences for the 4 managed keys (or clear
+# them if no snapshot exists, as a defensive fallback), then delete the
+# snapshot. Assumes the caller already holds the credential lock.
+_settings_env_restore_locked() {
+  "${PY}" - "${CLAUDE_SETTINGS}" "${SETTINGS_ENV_SNAPSHOT}" <<'EOF'
+import json, os, sys, tempfile
 
-path = sys.argv[1]
-keys = sys.argv[2:]
+MANAGED = ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_MODEL", "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"]
 
-if not os.path.exists(path):
-    sys.exit(0)
-raw = open(path).read().strip()
-if not raw:
-    sys.exit(0)
+def load_json(p, default):
+    if not os.path.exists(p):
+        return default
+    raw = open(p).read().strip()
+    return json.loads(raw) if raw else default
+
+def atomic_write(p, data, mode=0o600):
+    d = os.path.dirname(p) or "."
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".relay-tmp-")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, indent=2)
+            f.write("\n")
+        os.chmod(tmp, mode)
+        os.replace(tmp, p)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+path, snapshot_path = sys.argv[1], sys.argv[2]
+
 try:
-    data = json.loads(raw)
+    data = load_json(path, {})
 except json.JSONDecodeError as e:
     print(f"settings.json is not valid JSON: {e}", file=sys.stderr)
     sys.exit(1)
-
 if not isinstance(data, dict):
     print("settings.json root is not a JSON object", file=sys.stderr)
     sys.exit(1)
 
 env = data.get("env")
-if isinstance(env, dict):
-    changed = False
-    for k in keys:
+if not isinstance(env, dict):
+    env = {}
+
+changed = False
+if os.path.exists(snapshot_path):
+    snapshot = load_json(snapshot_path, {})
+    for k in MANAGED:
+        v = snapshot.get(k)
+        if v is None:
+            changed = env.pop(k, None) is not None or changed
+        else:
+            changed = env.get(k) != v or changed
+            env[k] = v
+else:
+    for k in MANAGED:
         if k in env:
             del env[k]
             changed = True
-    if changed:
-        data["env"] = env
-        with open(path, "w") as f:
-            json.dump(data, f, indent=2)
-            f.write("\n")
+
+if changed:
+    data["env"] = env
+    atomic_write(path, data, 0o600)
+
+if os.path.exists(snapshot_path):
+    os.unlink(snapshot_path)
 EOF
 }
+_settings_env_restore() { with_credential_lock _settings_env_restore_locked; }
 ```
 
-- [ ] **Step 2: Verify — fresh file (doesn't exist yet)**
+(Both heredocs use the quoted `<<'EOF'` form — no shell expansion inside — and duplicate the small `MANAGED`/`load_json`/`atomic_write` core rather than sharing it, consistent with this codebase's existing convention of duplicating small logic across embedded heredocs instead of factoring a shared module; see the "ponytail" comment at relay:628 for a precedent.)
+
+Note the `$(_settings_json_core)` splice at the top of each heredoc: it's a plain function call substituted into the script text before the `<<EOF` heredoc is read by the shell (this heredoc is **not** quoted — `<<EOF`, not `<<'EOF'` — specifically so the substitution happens; the rest of each script has no `$variable`/backtick syntax the shell could misinterpret, only Python). This avoids duplicating the `MANAGED`/`load_json`/`atomic_write` definitions between `activate` and `restore`.
+
+- [ ] **Step 2: Verify — fresh file, first activation snapshots absence**
 
 ```bash
 export RELAY_TEST_HOME=$(mktemp -d)/relayhome
 HOME="${RELAY_TEST_HOME}" bash -c '
   eval "$(sed -n "1,2402p" /Users/ds-anxing/GitHub/relay/relay)"
-  _settings_env_merge "ANTHROPIC_BASE_URL=http://localhost:4000" "ANTHROPIC_AUTH_TOKEN=sk-test"
-  cat "${CLAUDE_SETTINGS}"
+  _settings_env_activate "ANTHROPIC_BASE_URL=http://localhost:4000" "ANTHROPIC_AUTH_TOKEN=sk-test"
+  echo "--- settings.json ---"; cat "${CLAUDE_SETTINGS}"; echo
+  echo "--- snapshot ---"; cat "${SETTINGS_ENV_SNAPSHOT}"; echo
+  echo "settings.json perms: $(stat -f "%Lp" "${CLAUDE_SETTINGS}")"
 '
 rm -rf "$(dirname "${RELAY_TEST_HOME}")"
 ```
-Expected: valid JSON `{"env": {"ANTHROPIC_BASE_URL": "http://localhost:4000", "ANTHROPIC_AUTH_TOKEN": "sk-test"}}` (formatting may vary, keys/values must match).
+Expected: `settings.json` has `env.ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` set, perms `600`; snapshot file has all 4 managed keys mapped to `null` (none existed before).
 
-- [ ] **Step 3: Verify — preserves unrelated existing keys, then clears cleanly**
+- [ ] **Step 3: Verify — preserves unrelated keys; restore brings back pre-existing managed-key values, not just clears them**
 
 ```bash
 export RELAY_TEST_HOME=$(mktemp -d)/relayhome
 mkdir -p "${RELAY_TEST_HOME}/.claude"
-printf '%s' '{"env":{"FOO":"bar"},"model":"opus"}' > "${RELAY_TEST_HOME}/.claude/settings.json"
+printf '%s' '{"env":{"FOO":"bar","ANTHROPIC_BASE_URL":"https://my-own-gateway","ANTHROPIC_AUTH_TOKEN":"my-own-key"},"model":"opus"}' > "${RELAY_TEST_HOME}/.claude/settings.json"
 HOME="${RELAY_TEST_HOME}" bash -c '
   eval "$(sed -n "1,2402p" /Users/ds-anxing/GitHub/relay/relay)"
-  _settings_env_merge "ANTHROPIC_BASE_URL=http://localhost:4000" "ANTHROPIC_AUTH_TOKEN=sk-test"
-  echo "--- after merge ---"
-  cat "${CLAUDE_SETTINGS}"
-  echo
-  _settings_env_clear
-  echo "--- after clear ---"
-  cat "${CLAUDE_SETTINGS}"
+  _settings_env_activate "ANTHROPIC_BASE_URL=http://localhost:4000" "ANTHROPIC_AUTH_TOKEN=sk-test"
+  echo "--- after activate ---"; cat "${CLAUDE_SETTINGS}"; echo
+  _settings_env_restore
+  echo "--- after restore ---"; cat "${CLAUDE_SETTINGS}"; echo
+  echo "snapshot exists: $([[ -f "${SETTINGS_ENV_SNAPSHOT}" ]] && echo yes || echo no)"
 '
 rm -rf "$(dirname "${RELAY_TEST_HOME}")"
 ```
-Expected: after merge, `env` has `FOO`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, and `model: "opus"` survives at the top level. After clear, `env` has only `FOO` again, `model: "opus"` still present — i.e. exactly the 4 provider keys were touched, nothing else.
+Expected: after activate, `env` has `FOO` (untouched), `model: "opus"` at top level (untouched), and `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` overwritten to the new values. After restore, `env` is back to **exactly** `{"FOO":"bar","ANTHROPIC_BASE_URL":"https://my-own-gateway","ANTHROPIC_AUTH_TOKEN":"my-own-key"}` — the user's own pre-existing gateway config, not merely deleted — and the snapshot file is gone.
 
-- [ ] **Step 4: Verify — malformed JSON aborts instead of clobbering**
+- [ ] **Step 4: Verify — provider-to-provider full replace doesn't leak stale keys**
+
+```bash
+export RELAY_TEST_HOME=$(mktemp -d)/relayhome
+HOME="${RELAY_TEST_HOME}" bash -c '
+  eval "$(sed -n "1,2402p" /Users/ds-anxing/GitHub/relay/relay)"
+  _settings_env_activate "ANTHROPIC_BASE_URL=http://a" "ANTHROPIC_AUTH_TOKEN=tok-a" "ANTHROPIC_MODEL=claude-opus-4-7" "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1"
+  echo "--- provider A active ---"; cat "${CLAUDE_SETTINGS}"; echo
+  _settings_env_activate "ANTHROPIC_BASE_URL=http://b" "ANTHROPIC_AUTH_TOKEN=tok-b"
+  echo "--- switched to provider B (no model/discovery) ---"; cat "${CLAUDE_SETTINGS}"; echo
+'
+rm -rf "$(dirname "${RELAY_TEST_HOME}")"
+```
+Expected: after switching to B, `env` has only `ANTHROPIC_BASE_URL=http://b` and `ANTHROPIC_AUTH_TOKEN=tok-b` — **no** `ANTHROPIC_MODEL` or `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY` left over from A. (This is the exact scenario the adversarial review's first finding was about.)
+
+- [ ] **Step 5: Verify — snapshot survives a provider-to-provider chain, restore returns the *original* pre-relay state**
+
+```bash
+export RELAY_TEST_HOME=$(mktemp -d)/relayhome
+mkdir -p "${RELAY_TEST_HOME}/.claude"
+printf '%s' '{"env":{"ANTHROPIC_MODEL":"opus-preview"}}' > "${RELAY_TEST_HOME}/.claude/settings.json"
+HOME="${RELAY_TEST_HOME}" bash -c '
+  eval "$(sed -n "1,2402p" /Users/ds-anxing/GitHub/relay/relay)"
+  _settings_env_activate "ANTHROPIC_BASE_URL=http://a" "ANTHROPIC_AUTH_TOKEN=tok-a" "ANTHROPIC_MODEL=claude-opus-4-7"
+  _settings_env_activate "ANTHROPIC_BASE_URL=http://b" "ANTHROPIC_AUTH_TOKEN=tok-b"
+  _settings_env_restore
+  echo "--- after A -> B -> restore ---"; cat "${CLAUDE_SETTINGS}"; echo
+'
+rm -rf "$(dirname "${RELAY_TEST_HOME}")"
+```
+Expected: final `env` is `{"ANTHROPIC_MODEL": "opus-preview"}` — the *original* value from before A was ever activated, not B's (or A's) leftover state. Confirms the snapshot is taken once at the first activation and left alone across subsequent provider switches.
+
+- [ ] **Step 6: Verify — malformed JSON aborts instead of clobbering**
 
 ```bash
 export RELAY_TEST_HOME=$(mktemp -d)/relayhome
@@ -622,39 +722,43 @@ mkdir -p "${RELAY_TEST_HOME}/.claude"
 printf '%s' '{not valid json' > "${RELAY_TEST_HOME}/.claude/settings.json"
 HOME="${RELAY_TEST_HOME}" bash -c '
   eval "$(sed -n "1,2402p" /Users/ds-anxing/GitHub/relay/relay)"
-  _settings_env_merge "ANTHROPIC_BASE_URL=http://localhost:4000" "ANTHROPIC_AUTH_TOKEN=sk-test"
+  _settings_env_activate "ANTHROPIC_BASE_URL=http://localhost:4000" "ANTHROPIC_AUTH_TOKEN=sk-test"
   echo "exit: $?"
   cat "${CLAUDE_SETTINGS}"
 '
 rm -rf "$(dirname "${RELAY_TEST_HOME}")"
 ```
-Expected: `settings.json is not valid JSON: ...` on stderr, non-zero exit, and the file's content is **unchanged** (`{not valid json`) — confirms no partial write happened.
+Expected: `settings.json is not valid JSON: ...` on stderr, non-zero exit, file content **unchanged** (`{not valid json`) — confirms the temp-file-then-rename write never happens on the error path, so there's no partial write.
 
-- [ ] **Step 5: Verify — clear is a no-op when nothing to clear**
+- [ ] **Step 7: Verify — restore is a safe no-op when nothing was ever activated**
 
 ```bash
 export RELAY_TEST_HOME=$(mktemp -d)/relayhome
 HOME="${RELAY_TEST_HOME}" bash -c '
   eval "$(sed -n "1,2402p" /Users/ds-anxing/GitHub/relay/relay)"
-  _settings_env_clear
+  _settings_env_restore
   echo "exit: $?"
   ls "${CLAUDE_SETTINGS}" 2>&1
 '
 rm -rf "$(dirname "${RELAY_TEST_HOME}")"
 ```
-Expected: exit 0, `ls` reports the file does not exist (never created by a no-op clear).
+Expected: exit 0, `ls` reports the file does not exist (a restore with nothing to restore and nothing to clear never creates the file).
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 cd /Users/ds-anxing/GitHub/relay
 git add relay
 git commit -m "$(cat <<'EOF'
-feat: add settings.json env merge/clear helpers for provider mode
+feat: add settings.json activate/restore with snapshot and shared lock
 
-JSON read-modify-write against ${CLAUDE_DIR}/settings.json's env block,
-scoped to exactly the 4 LiteLLM-routing keys. Aborts on malformed JSON
-instead of risking a clobber; preserves every unrelated key.
+Hardens the original merge/clear design per an adversarial review:
+activate fully replaces the 4 managed keys (no leakage between
+providers with different optional fields), the pre-relay original
+values are snapshotted once and restored on full exit from provider
+mode (no destruction of a user's own pre-existing gateway config), and
+every write is atomic (temp file + rename) and serialized through the
+same lock do_switch already uses.
 
 Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
 EOF
@@ -669,7 +773,7 @@ EOF
 - Modify: `relay` — add `cmd_provider_use()` after `cmd_provider_list()` (Task 4).
 
 **Interfaces:**
-- Consumes: `provider_exists`, `_provider_field`, `_provider_discover` (Task 1), `_settings_env_merge` (Task 5).
+- Consumes: `provider_exists`, `_provider_field`, `_provider_discover` (Task 1), `_settings_env_activate` (Task 5).
 
 - [ ] **Step 1: Add the function**
 
@@ -689,13 +793,15 @@ cmd_provider_use() {
   [[ -n "${model}" ]] && pairs+=("ANTHROPIC_MODEL=${model}")
   [[ -n "${discover}" ]] && pairs+=("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1")
 
-  _settings_env_merge "${pairs[@]}" || { err "Failed to update ${CLAUDE_SETTINGS}"; exit 1; }
+  _settings_env_activate "${pairs[@]}" || { err "Failed to update ${CLAUDE_SETTINGS}"; exit 1; }
   printf '%s' "${name}" > "${ACTIVE_PROVIDER_FILE}"
 
   printf "\n  ${GR}${B}⚡ provider active → %s${R}  ${D}%s${R}\n" "${name}" "${base_url}"
   printf "  ${D}Active sessions pick up the switch on next message. New session: ${CY}claude -c${R}\n\n"
 }
 ```
+
+`_settings_env_activate` (not the `_locked` variant) — this is a standalone top-level command invocation, so it must acquire the lock itself.
 
 Note: this does **not** touch `${CURRENT_FILE}` or Keychain — the subscription account stays exactly as it was, just dormant while provider mode routes requests. This is what lets `relay provider off` hand control back without any account switch logic.
 
@@ -719,7 +825,27 @@ rm -rf "$(dirname "${RELAY_TEST_HOME}")"
 ```
 Expected: `env` now has `FOO` (preserved), `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_MODEL`, `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: "1"`; `active_provider` file contains `mylitellm`.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 3: Verify — switching providers at the `cmd_provider_use` level doesn't leak a prior provider's optional keys**
+
+```bash
+export RELAY_TEST_HOME=$(mktemp -d)/relayhome
+HOME="${RELAY_TEST_HOME}" bash -c '
+  eval "$(sed -n "1,2402p" /Users/ds-anxing/GitHub/relay/relay)"
+  cmd_provider_add withmodel --base-url http://localhost:4000 --token sk-a --model claude-opus-4-7 --discover-models
+  cmd_provider_add plain --base-url http://localhost:5000 --token sk-b
+  cmd_provider_use withmodel
+  cmd_provider_use plain
+  echo "--- settings.json after switching to plain ---"
+  cat "${CLAUDE_SETTINGS}"
+  echo
+  echo "--- active_provider ---"
+  cat "${ACTIVE_PROVIDER_FILE}"
+'
+rm -rf "$(dirname "${RELAY_TEST_HOME}")"
+```
+Expected: `env` has only `ANTHROPIC_BASE_URL=http://localhost:5000` and `ANTHROPIC_AUTH_TOKEN=sk-b` — no leftover `ANTHROPIC_MODEL`/`CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY` from `withmodel`; `active_provider` is `plain`.
+
+- [ ] **Step 4: Commit**
 
 ```bash
 cd /Users/ds-anxing/GitHub/relay
@@ -727,9 +853,10 @@ git add relay
 git commit -m "$(cat <<'EOF'
 feat: add relay provider use
 
-Merges the provider's routing keys into settings.json's env block and
-records it as the active provider. Subscription credentials are left
-untouched — they simply go dormant while provider mode is active.
+Activates a provider's routing keys via _settings_env_activate (full
+replace, not merge) and records it as the active provider. Subscription
+credentials are left untouched — they simply go dormant while provider
+mode is active.
 
 Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
 EOF
@@ -744,7 +871,7 @@ EOF
 - Modify: `relay` — add `cmd_provider_off()` after `cmd_provider_use()` (Task 6).
 
 **Interfaces:**
-- Consumes: `active_provider_name` (Task 1), `_settings_env_clear` (Task 5).
+- Consumes: `active_provider_name` (Task 1), `_settings_env_restore` (Task 5).
 
 - [ ] **Step 1: Add the function**
 
@@ -755,18 +882,20 @@ cmd_provider_off() {
     warn "No provider is currently active"
     return 0
   fi
-  _settings_env_clear || { err "Failed to update ${CLAUDE_SETTINGS}"; exit 1; }
+  _settings_env_restore || { err "Failed to update ${CLAUDE_SETTINGS}"; exit 1; }
   rm -f "${ACTIVE_PROVIDER_FILE}"
   ok "Provider mode off — subscription account resumes"
 }
 ```
 
-- [ ] **Step 2: Verify manually**
+`_settings_env_restore` (not the `_locked` variant) — standalone top-level command, acquires the lock itself.
+
+- [ ] **Step 2: Verify manually — restores pre-existing user config, not just clears**
 
 ```bash
 export RELAY_TEST_HOME=$(mktemp -d)/relayhome
 mkdir -p "${RELAY_TEST_HOME}/.claude"
-printf '%s' '{"env":{"FOO":"bar"}}' > "${RELAY_TEST_HOME}/.claude/settings.json"
+printf '%s' '{"env":{"FOO":"bar","ANTHROPIC_BASE_URL":"https://my-own-gateway","ANTHROPIC_AUTH_TOKEN":"my-own-key"}}' > "${RELAY_TEST_HOME}/.claude/settings.json"
 HOME="${RELAY_TEST_HOME}" bash -c '
   eval "$(sed -n "1,2402p" /Users/ds-anxing/GitHub/relay/relay)"
   cmd_provider_add mylitellm --base-url http://localhost:4000 --token sk-test
@@ -776,10 +905,11 @@ HOME="${RELAY_TEST_HOME}" bash -c '
   cat "${CLAUDE_SETTINGS}"
   echo
   echo "active_provider exists: $([[ -f "${ACTIVE_PROVIDER_FILE}" ]] && echo yes || echo no)"
+  echo "snapshot exists: $([[ -f "${SETTINGS_ENV_SNAPSHOT}" ]] && echo yes || echo no)"
 '
 rm -rf "$(dirname "${RELAY_TEST_HOME}")"
 ```
-Expected: `env` back to just `{"FOO": "bar"}`, `active_provider exists: no`.
+Expected: `env` restored to **exactly** `{"FOO":"bar","ANTHROPIC_BASE_URL":"https://my-own-gateway","ANTHROPIC_AUTH_TOKEN":"my-own-key"}` — the user's own pre-existing gateway config, not deleted; `active_provider exists: no`; `snapshot exists: no`.
 
 Also verify the "nothing active" case:
 ```bash
@@ -799,6 +929,10 @@ cd /Users/ds-anxing/GitHub/relay
 git add relay
 git commit -m "$(cat <<'EOF'
 feat: add relay provider off
+
+Restores the pre-relay snapshot (or clears the 4 managed keys as a
+defensive fallback) rather than blindly deleting them, so a user's own
+pre-existing routing config survives a provider-mode round trip.
 
 Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
 EOF
@@ -873,9 +1007,9 @@ EOF
 - Modify: `relay:520-528` (`_do_switch_locked`)
 
 **Interfaces:**
-- Consumes: `active_provider_name` (Task 1), `_settings_env_clear` (Task 5).
+- Consumes: `active_provider_name` (Task 1), `_settings_env_restore_locked` (Task 5 — the **non-lock-acquiring** variant; see below for why).
 
-- [ ] **Step 1: Add the provider-clearing step**
+- [ ] **Step 1: Add the provider-restoring step**
 
 Current (relay:520-528):
 ```bash
@@ -896,7 +1030,7 @@ _do_switch_locked() {
   local current; current=$(current_name)
 
   if [[ -n "$(active_provider_name)" ]]; then
-    _settings_env_clear
+    _settings_env_restore_locked
     rm -f "${ACTIVE_PROVIDER_FILE}"
   fi
 
@@ -908,14 +1042,16 @@ _do_switch_locked() {
 
 This runs unconditionally (even in the early-return "already on this account" branch) so that switching accounts always exits provider mode, regardless of whether the underlying account selection actually changed.
 
-- [ ] **Step 2: Verify manually**
+**Critical: this must call `_settings_env_restore_locked`, never `_settings_env_restore`.** `_do_switch_locked` only ever runs as the guarded command inside `do_switch()`'s `with_credential_lock` (relay:516-518, unchanged) — the lock is already held for the whole duration of this function. Calling the public `_settings_env_restore` wrapper here would make it try to acquire that same lock a second time from within the command the first acquisition is still waiting on — a guaranteed deadlock, not just a slow path. Task 5's two-tier `_locked`/unlocked function pairs exist specifically so call sites already inside the lock (this one) use the `_locked` variant directly, while standalone commands (`cmd_provider_use`, `cmd_provider_off`) use the lock-acquiring wrapper.
 
-This test needs a real account credential file (contents don't matter — `do_switch`/`_do_switch_locked` will attempt to write it to Keychain on macOS). To verify the provider-clearing behavior **without** touching the real system Keychain, stub `kc_write`/`kc_read` for the duration of the test:
+- [ ] **Step 2: Verify manually — restore fires, and the pre-existing snapshot is honored, not just cleared**
+
+This test needs a real account credential file (contents don't matter — `do_switch`/`_do_switch_locked` will attempt to write it to Keychain on macOS). To verify the provider-restoring behavior **without** touching the real system Keychain, stub `kc_write`/`kc_read` for the duration of the test:
 
 ```bash
 export RELAY_TEST_HOME=$(mktemp -d)/relayhome
 mkdir -p "${RELAY_TEST_HOME}/.claude"
-printf '%s' '{"env":{"FOO":"bar"}}' > "${RELAY_TEST_HOME}/.claude/settings.json"
+printf '%s' '{"env":{"FOO":"bar","ANTHROPIC_BASE_URL":"https://my-own-gateway","ANTHROPIC_AUTH_TOKEN":"my-own-key"}}' > "${RELAY_TEST_HOME}/.claude/settings.json"
 HOME="${RELAY_TEST_HOME}" bash -c '
   eval "$(sed -n "1,2402p" /Users/ds-anxing/GitHub/relay/relay)"
   # stub the Keychain-touching functions for this test only
@@ -929,14 +1065,14 @@ HOME="${RELAY_TEST_HOME}" bash -c '
   mkdir -p "${CREDS_STORE}"
   printf "%s" "{}" > "$(account_creds work)"
   add_to_order work
-  do_switch work
+  timeout 10 bash -c "do_switch work" || { echo "TIMED OUT — likely a lock deadlock regression"; exit 1; }
 
   echo "after switch — active: [$(active_provider_name)]"
   echo "settings.json: $(cat "${CLAUDE_SETTINGS}")"
 '
 rm -rf "$(dirname "${RELAY_TEST_HOME}")"
 ```
-Expected: `before switch — active: mylitellm`, `after switch — active: []`, and `settings.json` shows `env` back to just `{"FOO": "bar"}`.
+Expected (and completes within the 10s timeout, not hanging): `before switch — active: mylitellm`, `after switch — active: []`, and `settings.json` shows `env` restored to **exactly** `{"FOO":"bar","ANTHROPIC_BASE_URL":"https://my-own-gateway","ANTHROPIC_AUTH_TOKEN":"my-own-key"}` — the pre-existing gateway config, not merely cleared. The `timeout 10` wrapper is a deliberate regression guard: if a future edit accidentally swaps in the lock-acquiring `_settings_env_restore` here, this test hangs instead of silently passing.
 
 - [ ] **Step 3: Commit**
 
@@ -944,11 +1080,14 @@ Expected: `before switch — active: mylitellm`, `after switch — active: []`, 
 cd /Users/ds-anxing/GitHub/relay
 git add relay
 git commit -m "$(cat <<'EOF'
-feat: clear active provider state on subscription account switch
+feat: restore provider settings state on subscription account switch
 
 Enforces mutual exclusion — relay <account> now always exits provider
-mode (clearing settings.json's env overrides and active_provider),
-even when switching to the account already recorded as current.
+mode (restoring settings.json's env block to its pre-relay snapshot,
+or clearing the 4 managed keys as a fallback, and removing
+active_provider), even when switching to the account already recorded
+as current. Uses _settings_env_restore_locked, not the lock-acquiring
+wrapper, since this runs from inside do_switch's already-held lock.
 
 Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
 EOF
@@ -1453,3 +1592,4 @@ EOF
 - **Spec coverage:** every command in the design doc (`provider add/list/use/off/remove`, `run`, status banner, namespace collision guard, mutual exclusion, settings.json safety) maps to a task above (Tasks 2–12). The design doc's live `--settings` verification is re-run as Task 10's Step 2 against a fresh fake proxy, now also proving immunity to a *pre-seeded conflicting* global settings.json (stronger than the original design-time test, which only used shell-exported conflicts).
 - **Known scope boundary (carried from design doc):** no `provider edit`/`update` command — change via remove + re-add.
 - **Testing caution carried into this plan:** Task 9's verification stubs `kc_write`/`kc_read`, and Task 10's account-branch verification stubs `do_switch`/`REAL_CLAUDE` — both deliberately avoid ever calling the real macOS Keychain during automated verification, since that's a real system-wide side effect on the implementer's actual machine, not a sandboxed resource `HOME` override can isolate.
+- **Adversarial-review hardening (2026-07-24):** a Codex adversarial review of the first draft of this plan/design found 3 high-severity issues, all now folded into Task 5 (and downstream Tasks 6, 7, 9): (1) provider activation was a partial merge that could leak a prior provider's `ANTHROPIC_MODEL`/`CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY` forward — fixed by making every activation a full replace of the managed key set (Task 5 Step 4, Task 6 Step 3 test this directly); (2) `off`/account-switch cleanup permanently deleted any pre-existing user config for the 4 managed keys with no way to recover it — fixed by snapshotting the pre-relay state once and restoring it on full exit (Task 5 Steps 3/5, Task 7 Step 2, Task 9 Step 2 test this); (3) writes were non-atomic and unsynchronized with the account-switch path, allowing an interrupted write to corrupt `settings.json` or a race to silently drop one command's effect — fixed by atomic temp-file+rename writes and routing every mutation through the same lock `do_switch` already uses, with the `_locked`/unlocked function-pair split (Task 5 Step 1's design, Task 9's "Critical" callout) preventing the deadlock that would result from a locked call site naively calling the lock-acquiring wrapper.
