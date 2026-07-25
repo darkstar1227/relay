@@ -862,6 +862,29 @@ os.chmod(path, 0o600)
   ok "Provider '${B}${name}${R}' added  ${D}${base_url}${R}"
 }
 
+cmd_provider_list() {
+  hdr "LiteLLM providers"
+  local names; names=$(list_provider_names)
+  if [[ -z "${names}" ]]; then
+    warn "No providers configured — add one with: relay provider add <name> --base-url <url> --token <token>"
+    return 0
+  fi
+  local active; active=$(active_provider_name)
+  local name base_url model info
+  while IFS= read -r name; do
+    [[ -z "${name}" ]] && continue
+    base_url=$(_provider_field "${name}" base_url)
+    model=$(_provider_field "${name}" model)
+    info="${base_url}"
+    [[ -n "${model}" ]] && info="${info}  model=${model}"
+    if [[ "${name}" == "${active}" ]]; then
+      printf "  ${GR}${B}✓ %-16s${R} ${D}%s${R}\n" "${name}" "${info}"
+    else
+      printf "    %-16s ${D}%s${R}\n" "${name}" "${info}"
+    fi
+  done <<< "${names}"
+}
+
 cmd_add() {
   local name="${1:-}"
   [[ -z "${name}" ]] && { err "usage: relay add <name>"; exit 1; }
