@@ -300,7 +300,10 @@ PROVIDER_ENV_KEYS=(ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_MODEL CLAUD
 # called since the last full restore (SETTINGS_ENV_SNAPSHOT doesn't exist).
 # Assumes the caller already holds the credential lock.
 _settings_env_activate_locked() {
-  "${PY}" - "${CLAUDE_SETTINGS}" "${SETTINGS_ENV_SNAPSHOT}" "$@" <<'EOF'
+  RELAY_SETTINGS_PATH="${CLAUDE_SETTINGS}" \
+  RELAY_SNAPSHOT_PATH="${SETTINGS_ENV_SNAPSHOT}" \
+  RELAY_ENV_PAIRS="$(printf '%s\n' "$@")" \
+  "${PY}" <<'EOF'
 import json, os, sys, tempfile
 
 MANAGED = ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_MODEL", "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"]
@@ -327,8 +330,9 @@ def atomic_write(p, data, mode=0o600):
             pass
         raise
 
-path, snapshot_path = sys.argv[1], sys.argv[2]
-pairs = sys.argv[3:]
+path = os.environ["RELAY_SETTINGS_PATH"]
+snapshot_path = os.environ["RELAY_SNAPSHOT_PATH"]
+pairs = [p for p in os.environ.get("RELAY_ENV_PAIRS", "").split("\n") if p]
 
 try:
     data = load_json(path, {})
@@ -997,9 +1001,18 @@ cmd_provider_add() {
     *) err "--base-url must start with http:// or https://"; exit 1 ;;
   esac
 
+  RELAY_PROVIDER_PATH="$(provider_file "${name}")" \
+  RELAY_PROVIDER_BASE_URL="${base_url}" \
+  RELAY_PROVIDER_TOKEN="${token}" \
+  RELAY_PROVIDER_MODEL="${model}" \
+  RELAY_PROVIDER_DISCOVER="${discover}" \
   "${PY}" -c '
-import json, sys, os
-path, base_url, token, model, discover = sys.argv[1:6]
+import json, os
+path = os.environ["RELAY_PROVIDER_PATH"]
+base_url = os.environ["RELAY_PROVIDER_BASE_URL"]
+token = os.environ["RELAY_PROVIDER_TOKEN"]
+model = os.environ.get("RELAY_PROVIDER_MODEL", "")
+discover = os.environ.get("RELAY_PROVIDER_DISCOVER", "")
 d = {"base_url": base_url, "auth_token": token}
 if model:
     d["model"] = model
@@ -1008,7 +1021,7 @@ if discover == "1":
 with open(path, "w") as f:
     json.dump(d, f)
 os.chmod(path, 0o600)
-' "$(provider_file "${name}")" "${base_url}" "${token}" "${model}" "${discover}"
+'
 
   ok "Provider '${B}${name}${R}' added  ${D}${base_url}${R}"
 }
@@ -1095,24 +1108,39 @@ cmd_run() {
     do_switch "${name}"
     exec "${REAL_CLAUDE}" "$@"
   elif provider_exists "${name}"; then
-    local base_url token model discover settings_json
+    local base_url token model discover settings_file
     base_url=$(_provider_field "${name}" base_url)
     token=$(_provider_field "${name}" auth_token)
     model=$(_provider_field "${name}" model)
     discover=$(_provider_discover "${name}")
 
-    settings_json=$("${PY}" -c '
-import json, sys
-base_url, token, model, discover = sys.argv[1:5]
+    # Written to a chmod-600 file under RELAY_DIR (mktemp's default file
+    # mode is already 0600) rather than passed inline via `claude`'s own
+    # argv — the exec'd claude process's cmdline would otherwise expose
+    # this provider's auth token to any local user via `ps`/`ps aux` for
+    # the entire session lifetime.
+    settings_file=$(mktemp "${RELAY_DIR}/.run-settings.XXXXXX")
+    RELAY_RUN_BASE_URL="${base_url}" \
+    RELAY_RUN_TOKEN="${token}" \
+    RELAY_RUN_MODEL="${model}" \
+    RELAY_RUN_DISCOVER="${discover}" \
+    RELAY_RUN_SETTINGS_FILE="${settings_file}" \
+    "${PY}" -c '
+import json, os
+base_url = os.environ["RELAY_RUN_BASE_URL"]
+token = os.environ["RELAY_RUN_TOKEN"]
+model = os.environ.get("RELAY_RUN_MODEL", "")
+discover = os.environ.get("RELAY_RUN_DISCOVER", "")
 env = {"ANTHROPIC_BASE_URL": base_url, "ANTHROPIC_AUTH_TOKEN": token}
 if model:
     env["ANTHROPIC_MODEL"] = model
 if discover == "1":
     env["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
-print(json.dumps({"env": env}))
-' "${base_url}" "${token}" "${model}" "${discover}")
+with open(os.environ["RELAY_RUN_SETTINGS_FILE"], "w") as f:
+    json.dump({"env": env}, f)
+'
 
-    exec "${REAL_CLAUDE}" --settings "${settings_json}" "$@"
+    exec "${REAL_CLAUDE}" --settings "${settings_file}" "$@"
   else
     err "Unknown account or provider: ${name}"
     exit 1
