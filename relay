@@ -1112,6 +1112,12 @@ cmd_run() {
     model=$(_provider_field "${name}" model)
     discover=$(_provider_discover "${name}")
 
+    # Opportunistic cleanup: a prior `relay run <provider>` can't clean up
+    # after itself (exec replaces the process, so no trap ever fires) —
+    # sweep anything old enough that the session which created it has
+    # almost certainly ended, so these don't accumulate indefinitely.
+    find "${RELAY_DIR}" -maxdepth 1 -name '.run-settings.*' -mtime +1 -delete 2>/dev/null || true
+
     # Written to a chmod-600 file under RELAY_DIR (mktemp's default file
     # mode is already 0600) rather than passed inline via `claude`'s own
     # argv — the exec'd claude process's cmdline would otherwise expose
