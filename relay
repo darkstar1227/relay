@@ -685,6 +685,11 @@ _do_switch_locked() {
   local name="$1"
   local current; current=$(current_name)
 
+  if [[ -n "$(active_provider_name)" ]]; then
+    _settings_env_restore_locked
+    rm -f "${ACTIVE_PROVIDER_FILE}"
+  fi
+
   if [[ "${current}" == "${name}" ]]; then
     ok "Already on account '${B}${name}${R}'"
     return 0
