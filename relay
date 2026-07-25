@@ -1044,6 +1044,17 @@ cmd_provider_use() {
   printf "  ${D}Active sessions pick up the switch on next message. New session: ${CY}claude -c${R}\n\n"
 }
 
+cmd_provider_off() {
+  local active; active=$(active_provider_name)
+  if [[ -z "${active}" ]]; then
+    warn "No provider is currently active"
+    return 0
+  fi
+  _settings_env_restore || { err "Failed to update ${CLAUDE_SETTINGS}"; exit 1; }
+  rm -f "${ACTIVE_PROVIDER_FILE}"
+  ok "Provider mode off — subscription account resumes"
+}
+
 cmd_add() {
   local name="${1:-}"
   [[ -z "${name}" ]] && { err "usage: relay add <name>"; exit 1; }
