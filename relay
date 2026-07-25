@@ -1055,6 +1055,20 @@ cmd_provider_off() {
   ok "Provider mode off — subscription account resumes"
 }
 
+cmd_provider_remove() {
+  local name="${1:-}"
+  [[ -z "${name}" ]] && { err "usage: relay provider remove <name>"; exit 1; }
+  provider_exists "${name}" || { err "Provider '${name}' not found"; exit 1; }
+  printf "\n  ${YL}Delete provider '${B}${name}${R}${YL}'? (y/N) ${R}"
+  read -r c
+  [[ "${c}" = "y" || "${c}" = "Y" ]] || { log "cancelled"; return 0; }
+  if [[ "$(active_provider_name)" == "${name}" ]]; then
+    cmd_provider_off
+  fi
+  rm -f "$(provider_file "${name}")"
+  ok "Deleted provider '${name}'"
+}
+
 cmd_add() {
   local name="${1:-}"
   [[ -z "${name}" ]] && { err "usage: relay add <name>"; exit 1; }
