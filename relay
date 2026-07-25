@@ -811,6 +811,57 @@ PYEOF
   fi
 }
 
+cmd_provider_add() {
+  local name="${1:-}"
+  [[ -z "${name}" ]] && { err "usage: relay provider add <name> --base-url <url> --token <token> [--model <model>] [--discover-models]"; exit 1; }
+  shift
+  case "${name}" in
+    *[!a-zA-Z0-9_-]*) err "name must contain only letters, numbers, underscores, or hyphens"; exit 1 ;;
+  esac
+  if account_exists "${name}"; then
+    err "'${name}' is already an account — pick a different provider name"
+    exit 1
+  fi
+  if provider_exists "${name}"; then
+    warn "Provider '${name}' already exists"
+    log "To change it: relay provider remove ${name} && relay provider add ${name} ..."
+    return 0
+  fi
+
+  local base_url="" token="" model="" discover=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --base-url) base_url="${2:-}"; shift 2 ;;
+      --token) token="${2:-}"; shift 2 ;;
+      --model) model="${2:-}"; shift 2 ;;
+      --discover-models) discover=1; shift ;;
+      *) err "unknown option: $1"; exit 1 ;;
+    esac
+  done
+
+  [[ -z "${base_url}" ]] && { err "--base-url is required"; exit 1; }
+  [[ -z "${token}" ]] && { err "--token is required"; exit 1; }
+  case "${base_url}" in
+    http://*|https://*) ;;
+    *) err "--base-url must start with http:// or https://"; exit 1 ;;
+  esac
+
+  "${PY}" -c '
+import json, sys, os
+path, base_url, token, model, discover = sys.argv[1:6]
+d = {"base_url": base_url, "auth_token": token}
+if model:
+    d["model"] = model
+if discover == "1":
+    d["discover_models"] = True
+with open(path, "w") as f:
+    json.dump(d, f)
+os.chmod(path, 0o600)
+' "$(provider_file "${name}")" "${base_url}" "${token}" "${model}" "${discover}"
+
+  ok "Provider '${B}${name}${R}' added  ${D}${base_url}${R}"
+}
+
 cmd_add() {
   local name="${1:-}"
   [[ -z "${name}" ]] && { err "usage: relay add <name>"; exit 1; }
