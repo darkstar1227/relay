@@ -729,8 +729,16 @@ _sync_current_creds() {
   [[ -n "${live}" ]] && printf '%s' "${live}" > "$(account_creds "${cur}")"
 }
 
+_provider_banner() {
+  local active; active=$(active_provider_name)
+  [[ -z "${active}" ]] && return 0
+  local base_url; base_url=$(_provider_field "${active}" base_url)
+  printf "\n  ${YL}⚡ litellm:${R} ${B}%s${R} ${D}(%s)${R}\n" "${active}" "${base_url}"
+}
+
 cmd_quick() {
   _check_update_bg
+  _provider_banner
   _sync_current_creds
   render_table quick "${CREDS_STORE}" "${META_STORE}" "$(current_name)" "$@"
   _show_update_notice
@@ -776,6 +784,7 @@ cmd_list() {
 }
 
 _cmd_status_once() {
+  _provider_banner
   _sync_current_creds
   local current; current=$(current_name)
   hdr "Current Status"
