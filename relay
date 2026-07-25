@@ -1022,6 +1022,28 @@ cmd_provider_list() {
   done <<< "${names}"
 }
 
+cmd_provider_use() {
+  local name="${1:-}"
+  [[ -z "${name}" ]] && { err "usage: relay provider use <name>"; exit 1; }
+  provider_exists "${name}" || { err "Provider '${name}' not found"; exit 1; }
+
+  local base_url token model discover
+  base_url=$(_provider_field "${name}" base_url)
+  token=$(_provider_field "${name}" auth_token)
+  model=$(_provider_field "${name}" model)
+  discover=$(_provider_discover "${name}")
+
+  local pairs=("ANTHROPIC_BASE_URL=${base_url}" "ANTHROPIC_AUTH_TOKEN=${token}")
+  [[ -n "${model}" ]] && pairs+=("ANTHROPIC_MODEL=${model}")
+  [[ -n "${discover}" ]] && pairs+=("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1")
+
+  _settings_env_activate "${pairs[@]}" || { err "Failed to update ${CLAUDE_SETTINGS}"; exit 1; }
+  printf '%s' "${name}" > "${ACTIVE_PROVIDER_FILE}"
+
+  printf "\n  ${GR}${B}⚡ provider active → %s${R}  ${D}%s${R}\n" "${name}" "${base_url}"
+  printf "  ${D}Active sessions pick up the switch on next message. New session: ${CY}claude -c${R}\n\n"
+}
+
 cmd_add() {
   local name="${1:-}"
   [[ -z "${name}" ]] && { err "usage: relay add <name>"; exit 1; }
