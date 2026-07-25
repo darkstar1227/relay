@@ -293,6 +293,143 @@ require_claude() {
   exit 1
 }
 
+PROVIDER_ENV_KEYS=(ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_MODEL CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY)
+
+# Fully replace the 4 managed keys with exactly the given KEY=VALUE pairs.
+# Snapshots the pre-relay original values/absences the first time this is
+# called since the last full restore (SETTINGS_ENV_SNAPSHOT doesn't exist).
+# Assumes the caller already holds the credential lock.
+_settings_env_activate_locked() {
+  "${PY}" - "${CLAUDE_SETTINGS}" "${SETTINGS_ENV_SNAPSHOT}" "$@" <<'EOF'
+import json, os, sys, tempfile
+
+MANAGED = ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_MODEL", "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"]
+
+def load_json(p, default):
+    if not os.path.exists(p):
+        return default
+    raw = open(p).read().strip()
+    return json.loads(raw) if raw else default
+
+def atomic_write(p, data, mode=0o600):
+    d = os.path.dirname(p) or "."
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".relay-tmp-")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, indent=2)
+            f.write("\n")
+        os.chmod(tmp, mode)
+        os.replace(tmp, p)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+path, snapshot_path = sys.argv[1], sys.argv[2]
+pairs = sys.argv[3:]
+
+try:
+    data = load_json(path, {})
+except json.JSONDecodeError as e:
+    print(f"settings.json is not valid JSON: {e}", file=sys.stderr)
+    sys.exit(1)
+if not isinstance(data, dict):
+    print("settings.json root is not a JSON object", file=sys.stderr)
+    sys.exit(1)
+
+env = data.get("env")
+if not isinstance(env, dict):
+    env = {}
+
+if not os.path.exists(snapshot_path):
+    snapshot = {k: env.get(k) for k in MANAGED}
+    atomic_write(snapshot_path, snapshot, 0o600)
+
+for k in MANAGED:
+    env.pop(k, None)
+for pair in pairs:
+    k, _, v = pair.partition("=")
+    env[k] = v
+data["env"] = env
+atomic_write(path, data, 0o600)
+EOF
+}
+_settings_env_activate() { with_credential_lock _settings_env_activate_locked "$@"; }
+
+# Restore the snapshotted values/absences for the 4 managed keys (or clear
+# them if no snapshot exists, as a defensive fallback), then delete the
+# snapshot. Assumes the caller already holds the credential lock.
+_settings_env_restore_locked() {
+  "${PY}" - "${CLAUDE_SETTINGS}" "${SETTINGS_ENV_SNAPSHOT}" <<'EOF'
+import json, os, sys, tempfile
+
+MANAGED = ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_MODEL", "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"]
+
+def load_json(p, default):
+    if not os.path.exists(p):
+        return default
+    raw = open(p).read().strip()
+    return json.loads(raw) if raw else default
+
+def atomic_write(p, data, mode=0o600):
+    d = os.path.dirname(p) or "."
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".relay-tmp-")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, indent=2)
+            f.write("\n")
+        os.chmod(tmp, mode)
+        os.replace(tmp, p)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+path, snapshot_path = sys.argv[1], sys.argv[2]
+
+try:
+    data = load_json(path, {})
+except json.JSONDecodeError as e:
+    print(f"settings.json is not valid JSON: {e}", file=sys.stderr)
+    sys.exit(1)
+if not isinstance(data, dict):
+    print("settings.json root is not a JSON object", file=sys.stderr)
+    sys.exit(1)
+
+env = data.get("env")
+if not isinstance(env, dict):
+    env = {}
+
+changed = False
+if os.path.exists(snapshot_path):
+    snapshot = load_json(snapshot_path, {})
+    for k in MANAGED:
+        v = snapshot.get(k)
+        if v is None:
+            changed = env.pop(k, None) is not None or changed
+        else:
+            changed = env.get(k) != v or changed
+            env[k] = v
+else:
+    for k in MANAGED:
+        if k in env:
+            del env[k]
+            changed = True
+
+if changed:
+    data["env"] = env
+    atomic_write(path, data, 0o600)
+
+if os.path.exists(snapshot_path):
+    os.unlink(snapshot_path)
+EOF
+}
+_settings_env_restore() { with_credential_lock _settings_env_restore_locked; }
+
 # ══════════════════════════════════════════════════════════════════
 # Python core: parallel usage fetch + table rendering
 # args: <mode: quick|full> <creds_dir> <meta_dir> <current_name> [--no-usage]
