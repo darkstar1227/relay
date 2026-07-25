@@ -1074,6 +1074,42 @@ cmd_provider_remove() {
   ok "Deleted provider '${name}'"
 }
 
+cmd_run() {
+  local name="${1:-}"
+  [[ -z "${name}" ]] && { err "usage: relay run <name> [-- <claude args...>]"; exit 1; }
+  shift
+  [[ "${1:-}" == "--" ]] && shift
+
+  require_claude
+
+  if account_exists "${name}"; then
+    do_switch "${name}"
+    exec "${REAL_CLAUDE}" "$@"
+  elif provider_exists "${name}"; then
+    local base_url token model discover settings_json
+    base_url=$(_provider_field "${name}" base_url)
+    token=$(_provider_field "${name}" auth_token)
+    model=$(_provider_field "${name}" model)
+    discover=$(_provider_discover "${name}")
+
+    settings_json=$("${PY}" -c '
+import json, sys
+base_url, token, model, discover = sys.argv[1:5]
+env = {"ANTHROPIC_BASE_URL": base_url, "ANTHROPIC_AUTH_TOKEN": token}
+if model:
+    env["ANTHROPIC_MODEL"] = model
+if discover == "1":
+    env["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
+print(json.dumps({"env": env}))
+' "${base_url}" "${token}" "${model}" "${discover}")
+
+    exec "${REAL_CLAUDE}" --settings "${settings_json}" "$@"
+  else
+    err "Unknown account or provider: ${name}"
+    exit 1
+  fi
+}
+
 cmd_add() {
   local name="${1:-}"
   [[ -z "${name}" ]] && { err "usage: relay add <name>"; exit 1; }
