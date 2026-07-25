@@ -293,8 +293,6 @@ require_claude() {
   exit 1
 }
 
-PROVIDER_ENV_KEYS=(ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_MODEL CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY)
-
 # Fully replace the 4 managed keys with exactly the given KEY=VALUE pairs.
 # Snapshots the pre-relay original values/absences the first time this is
 # called since the last full restore (SETTINGS_ENV_SNAPSHOT doesn't exist).
