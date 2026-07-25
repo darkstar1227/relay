@@ -817,6 +817,10 @@ cmd_add() {
   case "${name}" in
     *[!a-zA-Z0-9_-]*) err "name must contain only letters, numbers, underscores, or hyphens"; exit 1 ;;
   esac
+  if provider_exists "${name}"; then
+    err "'${name}' is already a LiteLLM provider — pick a different account name"
+    exit 1
+  fi
   require_claude
   if account_exists "${name}"; then
     warn "Account '${name}' already exists"
