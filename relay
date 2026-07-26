@@ -2755,6 +2755,7 @@ cmd_help() {
   echo ""
   printf "  ${B}LiteLLM providers${R}\n"
   printf "  %-32s %s\n" "  relay provider add <name> --base-url <url> --token <token>" "add a provider"
+  printf "  %-32s %s\n" "    [--model <model>] [--discover-models]" "optional: pin a model, or auto-discover"
   printf "  %-32s %s\n" "  relay provider list"      "list configured providers"
   printf "  %-32s %s\n" "  relay provider use <name>" "route all future sessions through this provider"
   printf "  %-32s %s\n" "  relay provider off"       "stop routing through a provider, resume subscription"
