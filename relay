@@ -304,7 +304,7 @@ _settings_env_activate_locked() {
   "${PY}" <<'EOF'
 import json, os, sys, tempfile
 
-MANAGED = ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_MODEL", "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"]
+MANAGED = ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"]
 
 def load_json(p, default):
     if not os.path.exists(p):
@@ -367,7 +367,7 @@ _settings_env_restore_locked() {
   "${PY}" - "${CLAUDE_SETTINGS}" "${SETTINGS_ENV_SNAPSHOT}" <<'EOF'
 import json, os, sys, tempfile
 
-MANAGED = ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_MODEL", "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"]
+MANAGED = ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"]
 
 def load_json(p, default):
     if not os.path.exists(p):
@@ -966,7 +966,7 @@ PYEOF
 
 cmd_provider_add() {
   local name="${1:-}"
-  [[ -z "${name}" ]] && { err "usage: relay provider add <name> --base-url <url> --token <token> [--model <model>] [--discover-models]"; exit 1; }
+  [[ -z "${name}" ]] && { err "usage: relay provider add <name> --base-url <url> --token <token> [--model <model>] [--subagent-model <model>] [--discover-models]"; exit 1; }
   shift
   case "${name}" in
     *[!a-zA-Z0-9_-]*) err "name must contain only letters, numbers, underscores, or hyphens"; exit 1 ;;
@@ -981,12 +981,13 @@ cmd_provider_add() {
     return 0
   fi
 
-  local base_url="" token="" model="" discover=0
+  local base_url="" token="" model="" subagent_model="" discover=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --base-url) base_url="${2:-}"; shift 2 ;;
       --token) token="${2:-}"; shift 2 ;;
       --model) model="${2:-}"; shift 2 ;;
+      --subagent-model) subagent_model="${2:-}"; shift 2 ;;
       --discover-models) discover=1; shift ;;
       *) err "unknown option: $1"; exit 1 ;;
     esac
@@ -1003,6 +1004,7 @@ cmd_provider_add() {
   RELAY_PROVIDER_BASE_URL="${base_url}" \
   RELAY_PROVIDER_TOKEN="${token}" \
   RELAY_PROVIDER_MODEL="${model}" \
+  RELAY_PROVIDER_SUBAGENT_MODEL="${subagent_model}" \
   RELAY_PROVIDER_DISCOVER="${discover}" \
   "${PY}" -c '
 import json, os
@@ -1010,10 +1012,13 @@ path = os.environ["RELAY_PROVIDER_PATH"]
 base_url = os.environ["RELAY_PROVIDER_BASE_URL"]
 token = os.environ["RELAY_PROVIDER_TOKEN"]
 model = os.environ.get("RELAY_PROVIDER_MODEL", "")
+subagent_model = os.environ.get("RELAY_PROVIDER_SUBAGENT_MODEL", "")
 discover = os.environ.get("RELAY_PROVIDER_DISCOVER", "")
 d = {"base_url": base_url, "auth_token": token}
 if model:
     d["model"] = model
+if subagent_model:
+    d["subagent_model"] = subagent_model
 if discover == "1":
     d["discover_models"] = True
 with open(path, "w") as f:
@@ -1032,13 +1037,15 @@ cmd_provider_list() {
     return 0
   fi
   local active; active=$(active_provider_name)
-  local name base_url model info
+  local name base_url model subagent_model info
   while IFS= read -r name; do
     [[ -z "${name}" ]] && continue
     base_url=$(_provider_field "${name}" base_url)
     model=$(_provider_field "${name}" model)
+    subagent_model=$(_provider_field "${name}" subagent_model)
     info="${base_url}"
     [[ -n "${model}" ]] && info="${info}  model=${model}"
+    [[ -n "${subagent_model}" ]] && info="${info}  subagent_model=${subagent_model}"
     if [[ "${name}" == "${active}" ]]; then
       printf "  ${GR}${B}✓ %-16s${R} ${D}%s${R}\n" "${name}" "${info}"
     else
@@ -1052,14 +1059,16 @@ cmd_provider_use() {
   [[ -z "${name}" ]] && { err "usage: relay provider use <name>"; exit 1; }
   provider_exists "${name}" || { err "Provider '${name}' not found"; exit 1; }
 
-  local base_url token model discover
+  local base_url token model subagent_model discover
   base_url=$(_provider_field "${name}" base_url)
   token=$(_provider_field "${name}" auth_token)
   model=$(_provider_field "${name}" model)
+  subagent_model=$(_provider_field "${name}" subagent_model)
   discover=$(_provider_discover "${name}")
 
   local pairs=("ANTHROPIC_BASE_URL=${base_url}" "ANTHROPIC_AUTH_TOKEN=${token}")
   [[ -n "${model}" ]] && pairs+=("ANTHROPIC_MODEL=${model}")
+  [[ -n "${subagent_model}" ]] && pairs+=("CLAUDE_CODE_SUBAGENT_MODEL=${subagent_model}")
   [[ -n "${discover}" ]] && pairs+=("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1")
 
   _settings_env_activate "${pairs[@]}" || { err "Failed to update ${CLAUDE_SETTINGS}"; exit 1; }
@@ -1106,10 +1115,11 @@ cmd_run() {
     do_switch "${name}"
     exec "${REAL_CLAUDE}" "$@"
   elif provider_exists "${name}"; then
-    local base_url token model discover settings_file
+    local base_url token model subagent_model discover settings_file
     base_url=$(_provider_field "${name}" base_url)
     token=$(_provider_field "${name}" auth_token)
     model=$(_provider_field "${name}" model)
+    subagent_model=$(_provider_field "${name}" subagent_model)
     discover=$(_provider_discover "${name}")
 
     # Opportunistic cleanup: a prior `relay run <provider>` can't clean up
@@ -1127,6 +1137,7 @@ cmd_run() {
     RELAY_RUN_BASE_URL="${base_url}" \
     RELAY_RUN_TOKEN="${token}" \
     RELAY_RUN_MODEL="${model}" \
+    RELAY_RUN_SUBAGENT_MODEL="${subagent_model}" \
     RELAY_RUN_DISCOVER="${discover}" \
     RELAY_RUN_SETTINGS_FILE="${settings_file}" \
     "${PY}" -c '
@@ -1134,10 +1145,13 @@ import json, os
 base_url = os.environ["RELAY_RUN_BASE_URL"]
 token = os.environ["RELAY_RUN_TOKEN"]
 model = os.environ.get("RELAY_RUN_MODEL", "")
+subagent_model = os.environ.get("RELAY_RUN_SUBAGENT_MODEL", "")
 discover = os.environ.get("RELAY_RUN_DISCOVER", "")
 env = {"ANTHROPIC_BASE_URL": base_url, "ANTHROPIC_AUTH_TOKEN": token}
 if model:
     env["ANTHROPIC_MODEL"] = model
+if subagent_model:
+    env["CLAUDE_CODE_SUBAGENT_MODEL"] = subagent_model
 if discover == "1":
     env["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
 with open(os.environ["RELAY_RUN_SETTINGS_FILE"], "w") as f:
@@ -2723,53 +2737,91 @@ cmd_uninstall() {
 
 cmd_help() {
   printf "\n${B}${CY}  relay${R} ${D}%s — multi-account switcher for Claude Code${R}\n\n" "$(_read_version)"
+
   printf "  ${B}Inside Claude Code (prefix with !)${R}\n"
-  printf "  %-32s %s\n" "  !relay"           "account menu + 5hr usage"
-  printf "  %-32s %s\n" "  !relay 2"         "switch to account #2"
-  printf "  %-32s %s\n" "  !relay work"      "switch to named account"
-  printf "  %-32s %s\n" "  !relay status"    "detailed usage for current account"
+  printf "  %-42s %s\n" "  !relay"           "account menu + 5hr usage"
+  printf "  %-42s %s\n" "  !relay 2"         "switch to account #2 (by index shown in the menu)"
+  printf "  %-42s %s\n" "  !relay work"      "switch to account named 'work'"
+  printf "  %-42s %s\n" "  !relay status"    "detailed usage for current account"
   echo ""
+
   printf "  ${B}Account management${R}\n"
-  printf "  %-32s %s\n" "  relay add <name>"         "add account via browser login"
-  printf "  %-32s %s\n" "  relay add-force <name>"   "force re-login for existing account"
-  printf "  %-32s %s\n" "  relay refresh <name>"     "re-login to refresh an expired token"
-  printf "  %-32s %s\n" "  relay refresh-all"        "silent OAuth refresh for all accounts"
-  printf "  %-32s %s\n" "  relay save <name>"        "save current login state"
-  printf "  %-32s %s\n" "  relay rename <old> <new>" "rename an account"
-  printf "  %-32s %s\n" "  relay reorder"            "change account display/switch order"
-  printf "  %-32s %s\n" "  relay run <name>"         "one-off session on an account or provider"
-  printf "  %-32s %s\n" "  relay list"               "full list with weekly usage"
-  printf "  %-32s %s\n" "  relay list -f"            "live-refresh mode (Ctrl+C to exit)"
-  printf "  %-32s %s\n" "  relay list --no-usage"    "list without querying API"
-  printf "  %-32s %s\n" "  relay status -f"          "live-refresh current account status"
-  printf "  %-32s %s\n" "  relay remove <name>"      "delete an account"
-  printf "  %-32s %s\n" "  relay sessions"           "show all sessions"
-  printf "  %-32s %s\n" "  relay version"             "show current version"
-  printf "  %-32s %s\n" "  relay update"              "update to latest version"
-  printf "  %-32s %s\n" "  relay uninstall"          "remove relay and all account data"
+  printf "  %-42s %s\n" "  relay add <name>"         "add account via browser login (opens claude /login)"
+  printf "  %-42s %s\n" "  relay add-force <name>"   "wipe stored creds/meta first, then force re-login"
+  printf "  %-42s %s\n" "  relay refresh <name>"     "re-login to refresh an expired/expiring token"
+  printf "  %-42s %s\n" "  relay refresh-all"        "silent OAuth refresh for every stored account"
+  printf "  %-42s %s\n" "  relay save <name>"        "save whatever is currently logged in as <name>"
+  printf "  %-42s %s\n" "  relay rename <old> <new>" "rename an account (updates order + current pointer)"
+  printf "  %-42s %s\n" "  relay remove <name>"      "delete an account (alias: rm, del)"
+  printf "  %-42s %s\n" "  relay reorder"            "interactively change account display/switch order"
+  printf "  %-42s %s\n" "  relay switch <name|#>"    "switch account by name or index (alias: sw, use)"
+  printf "  %-42s %s\n" "  relay <name>"             "bare name/index also switches (shortcut for switch)"
+  printf "  %-42s %s\n" "  relay continue [name]"    "optionally switch, then exec 'claude --continue' (alias: cont, c)"
   echo ""
-  printf "  ${B}Autoswitch${R}\n"
-  printf "  %-32s %s\n" "  relay autoswitch config"   "set up auto-switching"
-  printf "  %-32s %s\n" "  relay autoswitch start/stop" "manage background daemon"
-  printf "  %-32s %s\n" "  relay autoswitch status"   "daemon state + thresholds"
+
+  printf "  ${B}Listing & status${R}\n"
+  printf "  %-42s %s\n" "  relay list"               "full account list with weekly usage (alias: ls)"
+  printf "  %-42s %s\n" "    -f, --follow"           "live-refresh mode, redraws every 30s (Ctrl+C to exit)"
+  printf "  %-42s %s\n" "    --no-usage"             "list without querying the usage API (fast, offline)"
+  printf "  %-42s %s\n" "  relay status"             "detailed usage for the current account (alias: st)"
+  printf "  %-42s %s\n" "    -f"                     "live-refresh current account status"
+  printf "  %-42s %s\n" "  relay sessions"           "show all local Claude sessions (alias: sess)"
   echo ""
+
+  printf "  ${B}One-off runs${R}\n"
+  printf "  %-42s %s\n" "  relay run <name>"           "one-off session on an account or provider, then exec claude"
+  printf "  %-42s %s\n" "  relay run <name> -- <args>" "forward extra args to claude itself, e.g. -- --resume"
+  printf "  %-42s %s\n" "    (leaves global switch/provider state untouched — safe for concurrent sessions)"
+  echo ""
+
   printf "  ${B}LiteLLM providers${R}\n"
-  printf "  %-32s %s\n" "  relay provider add <name> --base-url <url> --token <token>" "add a provider"
-  printf "  %-32s %s\n" "    [--model <model>] [--discover-models]" "optional: pin a model, or auto-discover"
-  printf "  %-32s %s\n" "  relay provider list"      "list configured providers"
-  printf "  %-32s %s\n" "  relay provider use <name>" "route all future sessions through this provider"
-  printf "  %-32s %s\n" "  relay provider off"       "stop routing through a provider, resume subscription"
-  printf "  %-32s %s\n" "  relay provider remove <name>" "delete a provider"
+  printf "  %-42s %s\n" "  relay provider add <name>"  "add a LiteLLM-compatible provider (alias: prov)"
+  printf "  %-42s %s\n" "    --base-url <url>"         "required: http(s):// base URL of the gateway"
+  printf "  %-42s %s\n" "    --token <token>"          "required: auth token/API key for the gateway"
+  printf "  %-42s %s\n" "    --model <model>"          "optional: pin ANTHROPIC_MODEL to this alias"
+  printf "  %-42s %s\n" "    --subagent-model <model>" "optional: pin CLAUDE_CODE_SUBAGENT_MODEL"
+  printf "  %-42s %s\n" "                              " "(overrides every subagent's own model: frontmatter)"
+  printf "  %-42s %s\n" "    --discover-models"        "optional: enable gateway model discovery instead of pinning"
+  printf "  %-42s %s\n" "  relay provider list"         "list configured providers + their settings"
+  printf "  %-42s %s\n" "  relay provider use <name>"   "route all future sessions through this provider"
+  printf "  %-42s %s\n" "  relay provider off"          "stop routing through a provider, resume subscription account"
+  printf "  %-42s %s\n" "  relay provider remove <name>" "delete a provider (prompts for confirmation)"
   echo ""
+
+  printf "  ${B}Autoswitch daemon${R}\n"
+  printf "  %-42s %s\n" "  relay autoswitch config"     "interactive setup: order, thresholds, poll interval (alias: as)"
+  printf "  %-42s %s\n" "  relay autoswitch start"      "install + start the background launchd/systemd daemon"
+  printf "  %-42s %s\n" "  relay autoswitch stop"       "stop and uninstall the background daemon"
+  printf "  %-42s %s\n" "  relay autoswitch status"     "daemon running state + per-account thresholds"
+  printf "  %-42s %s\n" "  relay autoswitch log"        "tail the daemon's log file"
+  printf "  %-42s %s\n" "  relay autoswitch"             "no subcommand: config if unset, else status"
+  echo ""
+
+  printf "  ${B}Locking (autoswitch)${R}\n"
+  printf "  %-42s %s\n" "  relay lock <name>"        "exclude an account from autoswitch cycling when over limit"
+  printf "  %-42s %s\n" "  relay unlock <name>"      "remove a lock"
+  printf "  %-42s %s\n" "  relay lock"               "no argument: show all locked accounts"
+  echo ""
+
   printf "  ${B}Warmup${R}\n"
-  printf "  %-32s %s\n" "  relay warmup add <acct> <HH:MM>" "pre-warm an account's 5hr window daily"
-  printf "  %-32s %s\n" "  relay warmup remove <acct> [HH:MM]" "remove a warmup schedule"
-  printf "  %-32s %s\n" "  relay warmup list"         "show scheduled warmups + last result"
-  printf "  %-32s %s\n" "  relay warmup pause/resume" "suspend/re-enable without deleting"
-  printf "  %-32s %s\n" "  relay lock <name>"         "prevent account from cycling back when over limit"
-  printf "  %-32s %s\n" "  relay unlock <name>"       "remove lock"
-  printf "  %-32s %s\n" "  relay lock"                "show locked accounts"
+  printf "  %-42s %s\n" "  relay warmup add <acct> <HH:MM>"    "schedule a daily pre-warm ping (24h local time)"
+  printf "  %-42s %s\n" "  relay warmup remove <acct> [HH:MM]" "remove one scheduled time, or all for <acct> if omitted (alias: rm)"
+  printf "  %-42s %s\n" "  relay warmup list"                  "show scheduled warmups + last-run result (alias: ls)"
+  printf "  %-42s %s\n" "  relay warmup test <acct>"           "fire a warmup ping for <acct> right now, synchronously"
+  printf "  %-42s %s\n" "  relay warmup pause"                 "suspend all warmups without deleting entries"
+  printf "  %-42s %s\n" "  relay warmup resume"                "re-enable previously paused warmups"
+  printf "  %-42s %s\n" "  relay warmup"                       "no subcommand: same as 'relay warmup list'"
+  printf "  %-42s %s\n" "    requires the autoswitch daemon running (relay autoswitch start) to actually fire"
   echo ""
+
+  printf "  ${B}Maintenance${R}\n"
+  printf "  %-42s %s\n" "  relay version"    "show current version (alias: --version, -V)"
+  printf "  %-42s %s\n" "  relay update"     "update relay to latest version"
+  printf "  %-42s %s\n" "  relay install"    "(re)install shell integration / launcher"
+  printf "  %-42s %s\n" "  relay uninstall"  "remove relay and all account data"
+  printf "  %-42s %s\n" "  relay help"       "show this help (alias: --help, -h)"
+  echo ""
+
   printf "  ${D}switches the OAuth credential (macOS Keychain / Linux ~/.claude/.credentials.json); sessions are shared${R}\n"
   printf "  ${D}after switching: claude -c to resume, claude --resume <id> for a specific session${R}\n\n"
   _check_update_bg

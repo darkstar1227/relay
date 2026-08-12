@@ -288,6 +288,11 @@ Sessions live in `~/.claude/projects/` and are shared across all accounts — af
 
 ## Changelog
 
+### v2.5.0 — 2026-08-12
+- Add `--subagent-model` to `relay provider add`, storing a `subagent_model` field that `relay provider use`/`relay run` inject as `CLAUDE_CODE_SUBAGENT_MODEL` — lets a LiteLLM provider pin the subagent model independently of the main `ANTHROPIC_MODEL`.
+- `relay provider list` now also shows `subagent_model` when set.
+- Expand `relay help` with every subcommand's flags (provider add's `--base-url`/`--token`/`--model`/`--subagent-model`/`--discover-models`, `list -f`/`--no-usage`, `run -- <args>`, `warmup test`, aliases, etc.)
+
 ### v2.4.0 — 2026-07-25
 - Add LiteLLM provider support: `relay provider add/list/use/off/remove` routes Claude Code through a LiteLLM proxy instead of a subscription account, via `${CLAUDE_DIR}/settings.json`'s env block (never touches Keychain/credentials).
 - Add `relay run <name>` for a one-off session pinned to a specific account or provider, independent of any global switch.
