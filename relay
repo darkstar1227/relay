@@ -1103,18 +1103,49 @@ cmd_provider_remove() {
   ok "Deleted provider '${name}'"
 }
 
+_run_history_dir() { printf '%s/run-history' "${RELAY_DIR}"; }
+
+# Per-directory "last name run here" pointer so `relay run -c`/`--resume` can
+# replay the same account/provider without retyping it — a crashed or
+# Ctrl-C'd `relay run <provider>` has no other record of what backend that
+# session used, since exec replaces the process before any trap could fire.
+_run_history_key() { printf '%s' "${PWD}" | cksum | awk '{print $1}'; }
+
+_run_record_last() {
+  mkdir -p "$(_run_history_dir)"
+  printf '%s' "$1" > "$(_run_history_dir)/$(_run_history_key)"
+}
+
+_run_last_name_for_cwd() {
+  local f; f="$(_run_history_dir)/$(_run_history_key)"
+  [[ -f "${f}" ]] && cat "${f}"
+}
+
 cmd_run() {
   local name="${1:-}"
   [[ -z "${name}" ]] && { err "usage: relay run <name> [-- <claude args...>]"; exit 1; }
-  shift
-  [[ "${1:-}" == "--" ]] && shift
 
   require_claude
 
+  case "${name}" in
+    -c|--continue|-r|--resume)
+      # Reuse the last account/provider run from this directory; leave "$@"
+      # untouched so -c/--resume (and any session id after it) still reach claude.
+      name=$(_run_last_name_for_cwd)
+      [[ -z "${name}" ]] && { err "No previous 'relay run <name>' recorded for this directory — run 'relay run <name>' once first"; exit 1; }
+      ;;
+    *)
+      shift
+      [[ "${1:-}" == "--" ]] && shift
+      ;;
+  esac
+
   if account_exists "${name}"; then
+    _run_record_last "${name}"
     do_switch "${name}"
     exec "${REAL_CLAUDE}" "$@"
   elif provider_exists "${name}"; then
+    _run_record_last "${name}"
     local base_url token model subagent_model discover settings_file
     base_url=$(_provider_field "${name}" base_url)
     token=$(_provider_field "${name}" auth_token)
@@ -2771,6 +2802,7 @@ cmd_help() {
   printf "  ${B}One-off runs${R}\n"
   printf "  %-42s %s\n" "  relay run <name>"           "one-off session on an account or provider, then exec claude"
   printf "  %-42s %s\n" "  relay run <name> -- <args>" "forward extra args to claude itself, e.g. -- --resume"
+  printf "  %-42s %s\n" "  relay run -c|--resume"      "replay last account/provider used by 'relay run' in this dir"
   printf "  %-42s %s\n" "    (leaves global switch/provider state untouched — safe for concurrent sessions)"
   echo ""
 
