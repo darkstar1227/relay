@@ -288,6 +288,9 @@ Sessions live in `~/.claude/projects/` and are shared across all accounts — af
 
 ## Changelog
 
+### v2.7.0 — 2026-09-04
+- `relay provider add` now turns on gateway model discovery by default (previously required `--discover-models`); opt out with `--no-discover-models`.
+
 ### v2.6.0 — 2026-09-04
 - Add `relay run -c`/`--continue`/`-r`/`--resume` — replays the last account/provider `relay run` used in the current directory, so a crashed or Ctrl-C'd one-off provider session can resume without retyping the provider name.
 
