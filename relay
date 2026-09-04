@@ -966,7 +966,7 @@ PYEOF
 
 cmd_provider_add() {
   local name="${1:-}"
-  [[ -z "${name}" ]] && { err "usage: relay provider add <name> --base-url <url> --token <token> [--model <model>] [--subagent-model <model>] [--discover-models]"; exit 1; }
+  [[ -z "${name}" ]] && { err "usage: relay provider add <name> --base-url <url> --token <token> [--model <model>] [--subagent-model <model>] [--no-discover-models]"; exit 1; }
   shift
   case "${name}" in
     *[!a-zA-Z0-9_-]*) err "name must contain only letters, numbers, underscores, or hyphens"; exit 1 ;;
@@ -981,7 +981,10 @@ cmd_provider_add() {
     return 0
   fi
 
-  local base_url="" token="" model="" subagent_model="" discover=0
+  # Discovery defaults on: without a pinned --model there's nothing else to
+  # route with, and with one it's still useful for `relay provider list` /
+  # future switches, so opt-out (--no-discover-models) rather than opt-in.
+  local base_url="" token="" model="" subagent_model="" discover=1
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --base-url) base_url="${2:-}"; shift 2 ;;
@@ -989,6 +992,7 @@ cmd_provider_add() {
       --model) model="${2:-}"; shift 2 ;;
       --subagent-model) subagent_model="${2:-}"; shift 2 ;;
       --discover-models) discover=1; shift ;;
+      --no-discover-models) discover=0; shift ;;
       *) err "unknown option: $1"; exit 1 ;;
     esac
   done
@@ -2813,7 +2817,7 @@ cmd_help() {
   printf "  %-42s %s\n" "    --model <model>"          "optional: pin ANTHROPIC_MODEL to this alias"
   printf "  %-42s %s\n" "    --subagent-model <model>" "optional: pin CLAUDE_CODE_SUBAGENT_MODEL"
   printf "  %-42s %s\n" "                              " "(overrides every subagent's own model: frontmatter)"
-  printf "  %-42s %s\n" "    --discover-models"        "optional: enable gateway model discovery instead of pinning"
+  printf "  %-42s %s\n" "    --no-discover-models"     "opt out: gateway model discovery is on by default"
   printf "  %-42s %s\n" "  relay provider list"         "list configured providers + their settings"
   printf "  %-42s %s\n" "  relay provider use <name>"   "route all future sessions through this provider"
   printf "  %-42s %s\n" "  relay provider off"          "stop routing through a provider, resume subscription account"
