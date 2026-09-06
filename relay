@@ -15,12 +15,11 @@ CURRENT_FILE="${RELAY_DIR}/current"
 ORDER_FILE="${RELAY_DIR}/order"
 UPDATE_CACHE="${RELAY_DIR}/.update_cache"
 PROVIDERS_STORE="${RELAY_DIR}/providers"
-ACTIVE_PROVIDER_FILE="${RELAY_DIR}/active_provider"
-SETTINGS_ENV_SNAPSHOT="${RELAY_DIR}/settings_env_snapshot.json"
 CLAUDE_DIR="${HOME}/.claude"
 CLAUDE_JSON="${HOME}/.claude.json"
 CLAUDE_SETTINGS="${CLAUDE_DIR}/settings.json"
 REAL_CLAUDE=$(command -v claude 2>/dev/null || echo "")
+REAL_CODEX=$(command -v codex 2>/dev/null || echo "")
 # macOS: /usr/bin/python3 uses the system TLS stack (correct certs);
 # /usr/local/bin/python3 (Homebrew/standalone) often lacks bundled certs → SSL failures
 if [[ "$(uname)" == "Darwin" ]] && [[ -x "/usr/bin/python3" ]]; then
@@ -106,7 +105,6 @@ account_exists() { [[ -f "$(account_creds "$1")" ]]; }
 
 provider_file()   { echo "${PROVIDERS_STORE}/$1.json"; }
 provider_exists() { [[ -f "$(provider_file "$1")" ]]; }
-active_provider_name() { [[ -f "${ACTIVE_PROVIDER_FILE}" ]] && cat "${ACTIVE_PROVIDER_FILE}" || echo ""; }
 
 # list providers alphabetically, one per line (bash 3.2 compatible)
 list_provider_names() {
@@ -125,6 +123,14 @@ _provider_field() {
 # "1" if the provider has discover_models truthy, else ""
 _provider_discover() {
   "${PY}" -c 'import json,sys; print("1" if json.load(open(sys.argv[1])).get("discover_models") else "")' "$(provider_file "$1")"
+}
+
+# escape a value for embedding as a TOML basic string in a `codex -c key="value"` arg
+_toml_str() {
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  printf '"%s"' "${s}"
 }
 
 # list accounts in canonical add-order, one per line (bash 3.2 compatible).
@@ -293,144 +299,11 @@ require_claude() {
   exit 1
 }
 
-# Fully replace the 4 managed keys with exactly the given KEY=VALUE pairs.
-# Snapshots the pre-relay original values/absences the first time this is
-# called since the last full restore (SETTINGS_ENV_SNAPSHOT doesn't exist).
-# Assumes the caller already holds the credential lock.
-_settings_env_activate_locked() {
-  RELAY_SETTINGS_PATH="${CLAUDE_SETTINGS}" \
-  RELAY_SNAPSHOT_PATH="${SETTINGS_ENV_SNAPSHOT}" \
-  RELAY_ENV_PAIRS="$(printf '%s\n' "$@")" \
-  "${PY}" <<'EOF'
-import json, os, sys, tempfile
-
-MANAGED = ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"]
-
-def load_json(p, default):
-    if not os.path.exists(p):
-        return default
-    raw = open(p).read().strip()
-    return json.loads(raw) if raw else default
-
-def atomic_write(p, data, mode=0o600):
-    d = os.path.dirname(p) or "."
-    fd, tmp = tempfile.mkstemp(dir=d, prefix=".relay-tmp-")
-    try:
-        with os.fdopen(fd, "w") as f:
-            json.dump(data, f, indent=2)
-            f.write("\n")
-        os.chmod(tmp, mode)
-        os.replace(tmp, p)
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
-
-path = os.environ["RELAY_SETTINGS_PATH"]
-snapshot_path = os.environ["RELAY_SNAPSHOT_PATH"]
-pairs = [p for p in os.environ.get("RELAY_ENV_PAIRS", "").split("\n") if p]
-
-try:
-    data = load_json(path, {})
-except json.JSONDecodeError as e:
-    print(f"settings.json is not valid JSON: {e}", file=sys.stderr)
-    sys.exit(1)
-if not isinstance(data, dict):
-    print("settings.json root is not a JSON object", file=sys.stderr)
-    sys.exit(1)
-
-env = data.get("env")
-if not isinstance(env, dict):
-    env = {}
-
-if not os.path.exists(snapshot_path):
-    snapshot = {k: env.get(k) for k in MANAGED}
-    atomic_write(snapshot_path, snapshot, 0o600)
-
-for k in MANAGED:
-    env.pop(k, None)
-for pair in pairs:
-    k, _, v = pair.partition("=")
-    env[k] = v
-data["env"] = env
-atomic_write(path, data, 0o600)
-EOF
+require_codex() {
+  [[ -n "${REAL_CODEX}" ]] && return 0
+  err "codex not found — install it with: npm i -g @openai/codex"
+  exit 1
 }
-_settings_env_activate() { with_credential_lock _settings_env_activate_locked "$@"; }
-
-# Restore the snapshotted values/absences for the 4 managed keys (or clear
-# them if no snapshot exists, as a defensive fallback), then delete the
-# snapshot. Assumes the caller already holds the credential lock.
-_settings_env_restore_locked() {
-  "${PY}" - "${CLAUDE_SETTINGS}" "${SETTINGS_ENV_SNAPSHOT}" <<'EOF'
-import json, os, sys, tempfile
-
-MANAGED = ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"]
-
-def load_json(p, default):
-    if not os.path.exists(p):
-        return default
-    raw = open(p).read().strip()
-    return json.loads(raw) if raw else default
-
-def atomic_write(p, data, mode=0o600):
-    d = os.path.dirname(p) or "."
-    fd, tmp = tempfile.mkstemp(dir=d, prefix=".relay-tmp-")
-    try:
-        with os.fdopen(fd, "w") as f:
-            json.dump(data, f, indent=2)
-            f.write("\n")
-        os.chmod(tmp, mode)
-        os.replace(tmp, p)
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
-
-path, snapshot_path = sys.argv[1], sys.argv[2]
-
-try:
-    data = load_json(path, {})
-except json.JSONDecodeError as e:
-    print(f"settings.json is not valid JSON: {e}", file=sys.stderr)
-    sys.exit(1)
-if not isinstance(data, dict):
-    print("settings.json root is not a JSON object", file=sys.stderr)
-    sys.exit(1)
-
-env = data.get("env")
-if not isinstance(env, dict):
-    env = {}
-
-changed = False
-if os.path.exists(snapshot_path):
-    snapshot = load_json(snapshot_path, {})
-    for k in MANAGED:
-        v = snapshot.get(k)
-        if v is None:
-            changed = env.pop(k, None) is not None or changed
-        else:
-            changed = env.get(k) != v or changed
-            env[k] = v
-else:
-    for k in MANAGED:
-        if k in env:
-            del env[k]
-            changed = True
-
-if changed:
-    data["env"] = env
-    atomic_write(path, data, 0o600)
-
-if os.path.exists(snapshot_path):
-    os.unlink(snapshot_path)
-EOF
-}
-_settings_env_restore() { with_credential_lock _settings_env_restore_locked; }
 
 # ══════════════════════════════════════════════════════════════════
 # Python core: parallel usage fetch + table rendering
@@ -687,11 +560,6 @@ _do_switch_locked() {
   local name="$1"
   local current; current=$(current_name)
 
-  if [[ -n "$(active_provider_name)" ]]; then
-    _settings_env_restore_locked
-    rm -f "${ACTIVE_PROVIDER_FILE}"
-  fi
-
   if [[ "${current}" == "${name}" ]]; then
     ok "Already on account '${B}${name}${R}'"
     return 0
@@ -731,16 +599,8 @@ _sync_current_creds() {
   [[ -n "${live}" ]] && printf '%s' "${live}" > "$(account_creds "${cur}")"
 }
 
-_provider_banner() {
-  local active; active=$(active_provider_name)
-  [[ -z "${active}" ]] && return 0
-  local base_url; base_url=$(_provider_field "${active}" base_url)
-  printf "\n  ${YL}⚡ litellm:${R} ${B}%s${R} ${D}(%s)${R}\n" "${active}" "${base_url}"
-}
-
 cmd_quick() {
   _check_update_bg
-  _provider_banner
   _sync_current_creds
   render_table quick "${CREDS_STORE}" "${META_STORE}" "$(current_name)" "$@"
   _show_update_notice
@@ -786,7 +646,6 @@ cmd_list() {
 }
 
 _cmd_status_once() {
-  _provider_banner
   _sync_current_creds
   local current; current=$(current_name)
   hdr "Current Status"
@@ -966,7 +825,7 @@ PYEOF
 
 cmd_provider_add() {
   local name="${1:-}"
-  [[ -z "${name}" ]] && { err "usage: relay provider add <name> --base-url <url> --token <token> [--model <model>] [--subagent-model <model>] [--no-discover-models]"; exit 1; }
+  [[ -z "${name}" ]] && { err "usage: relay provider add <name> --base-url <url> --token <token> [--model <model>] [--subagent-model <model>] [--no-discover-models] [--codex]"; exit 1; }
   shift
   case "${name}" in
     *[!a-zA-Z0-9_-]*) err "name must contain only letters, numbers, underscores, or hyphens"; exit 1 ;;
@@ -984,7 +843,7 @@ cmd_provider_add() {
   # Discovery defaults on: without a pinned --model there's nothing else to
   # route with, and with one it's still useful for `relay provider list` /
   # future switches, so opt-out (--no-discover-models) rather than opt-in.
-  local base_url="" token="" model="" subagent_model="" discover=1
+  local base_url="" token="" model="" subagent_model="" discover=1 agent="claude"
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --base-url) base_url="${2:-}"; shift 2 ;;
@@ -993,6 +852,7 @@ cmd_provider_add() {
       --subagent-model) subagent_model="${2:-}"; shift 2 ;;
       --discover-models) discover=1; shift ;;
       --no-discover-models) discover=0; shift ;;
+      --codex) agent="codex"; shift ;;
       *) err "unknown option: $1"; exit 1 ;;
     esac
   done
@@ -1004,12 +864,30 @@ cmd_provider_add() {
     *) err "--base-url must start with http:// or https://"; exit 1 ;;
   esac
 
+  # Codex CLI has no gateway-model-discovery equivalent — it always needs an
+  # explicit model, and CLAUDE_CODE_SUBAGENT_MODEL is a Claude-Code-only concept.
+  if [[ "${agent}" == "codex" ]]; then
+    if [[ -z "${model}" ]]; then
+      err "--codex requires --model <model> — Codex CLI has no model-discovery fallback"
+      exit 1
+    fi
+    if [[ "${discover}" == "1" ]]; then
+      warn "--discover-models has no effect with --codex (no gateway model discovery in Codex) — ignoring"
+      discover=0
+    fi
+    if [[ -n "${subagent_model}" ]]; then
+      warn "--subagent-model has no effect with --codex (Claude-Code-only) — ignoring"
+      subagent_model=""
+    fi
+  fi
+
   RELAY_PROVIDER_PATH="$(provider_file "${name}")" \
   RELAY_PROVIDER_BASE_URL="${base_url}" \
   RELAY_PROVIDER_TOKEN="${token}" \
   RELAY_PROVIDER_MODEL="${model}" \
   RELAY_PROVIDER_SUBAGENT_MODEL="${subagent_model}" \
   RELAY_PROVIDER_DISCOVER="${discover}" \
+  RELAY_PROVIDER_AGENT="${agent}" \
   "${PY}" -c '
 import json, os
 path = os.environ["RELAY_PROVIDER_PATH"]
@@ -1018,6 +896,7 @@ token = os.environ["RELAY_PROVIDER_TOKEN"]
 model = os.environ.get("RELAY_PROVIDER_MODEL", "")
 subagent_model = os.environ.get("RELAY_PROVIDER_SUBAGENT_MODEL", "")
 discover = os.environ.get("RELAY_PROVIDER_DISCOVER", "")
+agent = os.environ.get("RELAY_PROVIDER_AGENT", "")
 d = {"base_url": base_url, "auth_token": token}
 if model:
     d["model"] = model
@@ -1025,6 +904,8 @@ if subagent_model:
     d["subagent_model"] = subagent_model
 if discover == "1":
     d["discover_models"] = True
+if agent == "codex":
+    d["agent"] = "codex"
 with open(path, "w") as f:
     json.dump(d, f)
 os.chmod(path, 0o600)
@@ -1040,57 +921,19 @@ cmd_provider_list() {
     warn "No providers configured — add one with: relay provider add <name> --base-url <url> --token <token>"
     return 0
   fi
-  local active; active=$(active_provider_name)
-  local name base_url model subagent_model info
+  local name base_url model subagent_model agent info
   while IFS= read -r name; do
     [[ -z "${name}" ]] && continue
     base_url=$(_provider_field "${name}" base_url)
     model=$(_provider_field "${name}" model)
     subagent_model=$(_provider_field "${name}" subagent_model)
+    agent=$(_provider_field "${name}" agent)
     info="${base_url}"
     [[ -n "${model}" ]] && info="${info}  model=${model}"
     [[ -n "${subagent_model}" ]] && info="${info}  subagent_model=${subagent_model}"
-    if [[ "${name}" == "${active}" ]]; then
-      printf "  ${GR}${B}✓ %-16s${R} ${D}%s${R}\n" "${name}" "${info}"
-    else
-      printf "    %-16s ${D}%s${R}\n" "${name}" "${info}"
-    fi
+    [[ "${agent}" == "codex" ]] && info="${info}  agent=codex"
+    printf "    %-16s ${D}%s${R}\n" "${name}" "${info}"
   done <<< "${names}"
-}
-
-cmd_provider_use() {
-  local name="${1:-}"
-  [[ -z "${name}" ]] && { err "usage: relay provider use <name>"; exit 1; }
-  provider_exists "${name}" || { err "Provider '${name}' not found"; exit 1; }
-
-  local base_url token model subagent_model discover
-  base_url=$(_provider_field "${name}" base_url)
-  token=$(_provider_field "${name}" auth_token)
-  model=$(_provider_field "${name}" model)
-  subagent_model=$(_provider_field "${name}" subagent_model)
-  discover=$(_provider_discover "${name}")
-
-  local pairs=("ANTHROPIC_BASE_URL=${base_url}" "ANTHROPIC_AUTH_TOKEN=${token}")
-  [[ -n "${model}" ]] && pairs+=("ANTHROPIC_MODEL=${model}")
-  [[ -n "${subagent_model}" ]] && pairs+=("CLAUDE_CODE_SUBAGENT_MODEL=${subagent_model}")
-  [[ -n "${discover}" ]] && pairs+=("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1")
-
-  _settings_env_activate "${pairs[@]}" || { err "Failed to update ${CLAUDE_SETTINGS}"; exit 1; }
-  printf '%s' "${name}" > "${ACTIVE_PROVIDER_FILE}"
-
-  printf "\n  ${GR}${B}⚡ provider active → %s${R}  ${D}%s${R}\n" "${name}" "${base_url}"
-  printf "  ${D}Active sessions pick up the switch on next message. New session: ${CY}claude -c${R}\n\n"
-}
-
-cmd_provider_off() {
-  local active; active=$(active_provider_name)
-  if [[ -z "${active}" ]]; then
-    warn "No provider is currently active"
-    return 0
-  fi
-  _settings_env_restore || { err "Failed to update ${CLAUDE_SETTINGS}"; exit 1; }
-  rm -f "${ACTIVE_PROVIDER_FILE}"
-  ok "Provider mode off — subscription account resumes"
 }
 
 cmd_provider_remove() {
@@ -1100,9 +943,6 @@ cmd_provider_remove() {
   printf "\n  ${YL}Delete provider '${B}${name}${R}${YL}'? (y/N) ${R}"
   read -r c
   [[ "${c}" = "y" || "${c}" = "Y" ]] || { log "cancelled"; return 0; }
-  if [[ "$(active_provider_name)" == "${name}" ]]; then
-    cmd_provider_off
-  fi
   rm -f "$(provider_file "${name}")"
   ok "Deleted provider '${name}'"
 }
@@ -1127,9 +967,7 @@ _run_last_name_for_cwd() {
 
 cmd_run() {
   local name="${1:-}"
-  [[ -z "${name}" ]] && { err "usage: relay run <name> [-- <claude args...>]"; exit 1; }
-
-  require_claude
+  [[ -z "${name}" ]] && { err "usage: relay run <name> [--codex|--claude] [-- <args...>]"; exit 1; }
 
   case "${name}" in
     -c|--continue|-r|--resume)
@@ -1140,15 +978,30 @@ cmd_run() {
       ;;
     *)
       shift
-      [[ "${1:-}" == "--" ]] && shift
       ;;
   esac
 
+  local agent_override=""
+  case "${1:-}" in
+    --codex) agent_override="codex"; shift ;;
+    --claude) agent_override="claude"; shift ;;
+  esac
+  [[ "${1:-}" == "--" ]] && shift
+
   if account_exists "${name}"; then
+    if [[ "${agent_override}" == "codex" ]]; then
+      err "'${name}' is an account (Claude OAuth credential) — --codex is not valid for accounts"
+      exit 1
+    fi
+    require_claude
     _run_record_last "${name}"
     do_switch "${name}"
     exec "${REAL_CLAUDE}" "$@"
   elif provider_exists "${name}"; then
+    local agent="${agent_override}"
+    [[ -z "${agent}" ]] && agent=$(_provider_field "${name}" agent)
+    [[ -z "${agent}" ]] && agent="claude"
+
     _run_record_last "${name}"
     local base_url token model subagent_model discover settings_file
     base_url=$(_provider_field "${name}" base_url)
@@ -1156,6 +1009,28 @@ cmd_run() {
     model=$(_provider_field "${name}" model)
     subagent_model=$(_provider_field "${name}" subagent_model)
     discover=$(_provider_discover "${name}")
+
+    if [[ "${agent}" == "codex" ]]; then
+      require_codex
+      [[ -z "${model}" ]] && { err "Provider '${name}' has no --model set — Codex requires an explicit model (no discovery fallback)"; exit 1; }
+
+      local base_url_toml model_toml
+      base_url_toml=$(_toml_str "${base_url}")
+      model_toml=$(_toml_str "${model}")
+
+      local codex_args=(
+        -c model_provider="relay"
+        -c model_providers.relay.name="relay"
+        -c "model_providers.relay.base_url=${base_url_toml}"
+        -c model_providers.relay.env_key="RELAY_CODEX_API_KEY"
+        -c model_providers.relay.wire_api="responses"
+        -c model_providers.relay.stream_idle_timeout_ms=600000
+        -c "model=${model_toml}"
+      )
+      RELAY_CODEX_API_KEY="${token}" exec "${REAL_CODEX}" "${codex_args[@]}" "$@"
+    fi
+
+    require_claude
 
     # Opportunistic cleanup: a prior `relay run <provider>` can't clean up
     # after itself (exec replaces the process, so no trap ever fires) —
@@ -2806,8 +2681,9 @@ cmd_help() {
   printf "  ${B}One-off runs${R}\n"
   printf "  %-42s %s\n" "  relay run <name>"           "one-off session on an account or provider, then exec claude"
   printf "  %-42s %s\n" "  relay run <name> -- <args>" "forward extra args to claude itself, e.g. -- --resume"
+  printf "  %-42s %s\n" "  relay run <name> --codex"   "force Codex CLI for this run, regardless of the provider's stored agent"
+  printf "  %-42s %s\n" "  relay run <name> --claude"  "force Claude Code for this run (override a provider's stored --codex)"
   printf "  %-42s %s\n" "  relay run -c|--resume"      "replay last account/provider used by 'relay run' in this dir"
-  printf "  %-42s %s\n" "    (leaves global switch/provider state untouched — safe for concurrent sessions)"
   echo ""
 
   printf "  ${B}LiteLLM providers${R}\n"
@@ -2818,9 +2694,9 @@ cmd_help() {
   printf "  %-42s %s\n" "    --subagent-model <model>" "optional: pin CLAUDE_CODE_SUBAGENT_MODEL"
   printf "  %-42s %s\n" "                              " "(overrides every subagent's own model: frontmatter)"
   printf "  %-42s %s\n" "    --no-discover-models"     "opt out: gateway model discovery is on by default"
+  printf "  %-42s %s\n" "    --codex"                  "target OpenAI's Codex CLI instead of Claude Code for this provider"
+  printf "  %-42s %s\n" "                              " "(requires --model; --discover-models / --subagent-model don't apply)"
   printf "  %-42s %s\n" "  relay provider list"         "list configured providers + their settings"
-  printf "  %-42s %s\n" "  relay provider use <name>"   "route all future sessions through this provider"
-  printf "  %-42s %s\n" "  relay provider off"          "stop routing through a provider, resume subscription account"
   printf "  %-42s %s\n" "  relay provider remove <name>" "delete a provider (prompts for confirmation)"
   echo ""
 
@@ -2901,10 +2777,8 @@ case "${CMD}" in
     case "${sub}" in
       add)    cmd_provider_add "$@" ;;
       list|ls) cmd_provider_list ;;
-      use)    cmd_provider_use "$@" ;;
-      off)    cmd_provider_off ;;
       remove|rm) cmd_provider_remove "$@" ;;
-      *) err "usage: relay provider <add|list|use|off|remove> ..."; exit 1 ;;
+      *) err "usage: relay provider <add|list|remove> ..."; exit 1 ;;
     esac ;;
   run)              cmd_run "$@" ;;
   sessions|sess)    cmd_sessions ;;

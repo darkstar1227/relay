@@ -14,7 +14,7 @@ Everything lives in one bash script, `relay` (~1800 lines, macOS bash 3.2 compat
 - The autoswitch daemon is Python, embedded as a heredoc inside `relay` (`_extract_daemon()`) and written out to `~/.claude-relay/autoswitch-daemon.py` at install time. It's managed via a macOS launchd plist or Linux systemd user service — there is no separate daemon source file in this repo.
 - Credentials: macOS uses Keychain (service `Claude Code-credentials`); Linux uses `~/.claude/.credentials.json`. Relay's own per-account store lives at `~/.claude-relay/credentials/<name>.json`.
 - Account display/switch order is persisted in `~/.claude-relay/order` (one name per line, add-order) — this is the single source of truth for ordering; every listing/index/autoswitch-default path reads it instead of sorting filenames. Self-healing: stale entries are dropped and untracked credential files are appended automatically. Use `relay reorder` to change it.
-- LiteLLM provider mode: `~/.claude-relay/providers/<name>.json` (chmod 600, same convention as account credentials) stores `base_url`/`auth_token`/`model`/`discover_models` for each configured LiteLLM proxy. `relay provider use <name>` merges the corresponding `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_MODEL`/`CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY` keys into `${CLAUDE_DIR}/settings.json`'s `env` block (never the credential store) and records the active one in `~/.claude-relay/active_provider`; `relay provider off` reverses it. Mutually exclusive with subscription-account mode — switching one always clears the other's active marker. `relay run <name>` bypasses both global mechanisms for a single launch: for an account it's switch-then-exec; for a provider it uses `claude --settings '<inline JSON>'`, which is immune to concurrent global-state changes.
+- LiteLLM provider mode: `~/.claude-relay/providers/<name>.json` (chmod 600, same convention as account credentials) stores `base_url`/`auth_token`/`model`/`discover_models`/`agent` for each configured LiteLLM proxy. There is no global "always-on" provider switch — all provider usage goes through `relay run <name>`, a one-off exec that never touches `${CLAUDE_DIR}/settings.json`: for an account it's switch-then-exec `claude`; for a provider it defaults to `claude --settings '<inline JSON>'` unless the provider's `agent` field (or a `--codex`/`--claude` override passed to `relay run`) selects Codex CLI instead, in which case it execs `codex` with `-c model_provider=...` TOML overrides and the auth token passed only via a child-process env var (`RELAY_CODEX_API_KEY`), never in argv. `relay provider add <name> --codex` sets `agent=codex` (requires `--model`; `--discover-models`/`--subagent-model` don't apply to Codex).
 - Gotcha: on macOS, `relay` deliberately prefers `/usr/bin/python3` over a Homebrew python3 — the system Python uses the correct TLS cert store, Homebrew's often doesn't (see comment at `relay:19-25`).
 
 Known issues and in-flight design context: see `TODOS.md` and `docs/plans/*.md`.
@@ -79,3 +79,13 @@ Key routing rules:
 - Save progress → invoke /context-save
 - Resume context → invoke /context-restore
 - Author a backlog-ready spec/issue → invoke /spec
+
+<!-- OPENWIKI:START -->
+
+## OpenWiki
+
+This repository uses OpenWiki for recurring code documentation. Start with `openwiki/quickstart.md`, then follow its links to architecture, workflows, domain concepts, operations, integrations, testing guidance, and source maps.
+
+The scheduled OpenWiki GitHub Actions workflow refreshes the repository wiki. Do not hand-edit generated OpenWiki pages unless explicitly asked; prefer updating source code/docs and letting OpenWiki regenerate.
+
+<!-- OPENWIKI:END -->

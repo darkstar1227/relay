@@ -288,6 +288,11 @@ Sessions live in `~/.claude/projects/` and are shared across all accounts — af
 
 ## Changelog
 
+### v2.8.0 — 2026-09-06
+- **Removed** `relay provider use <name>` and `relay provider off` — the global "always-on" provider switch (which mutated `${CLAUDE_DIR}/settings.json`) is gone entirely. All provider usage now goes through `relay run <name>`, which never touches global state.
+- Add Codex CLI as an alternate `relay run` exec target: `relay provider add <name> --codex` stores `agent=codex` (requires `--model`; `--discover-models`/`--subagent-model` are ignored with a warning), and `relay run <name> --codex`/`--claude` override the stored agent for a single invocation.
+- Codex runs pass the LiteLLM `base_url`/`model` via `-c` TOML overrides; the auth token is handed to the `codex` process only through a child-process env var, never argv.
+
 ### v2.7.0 — 2026-09-04
 - `relay provider add` now turns on gateway model discovery by default (previously required `--discover-models`); opt out with `--no-discover-models`.
 
