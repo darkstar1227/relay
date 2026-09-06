@@ -288,6 +288,10 @@ Sessions live in `~/.claude/projects/` and are shared across all accounts — af
 
 ## Changelog
 
+### v2.9.0 — 2026-09-06
+- Add `relay proxy` (alias `px`): manual-only local process supervisor for a LiteLLM proxy and a user-supplied "bridge" command — `init`/`start`/`stop`/`status`/`log`, plus `proxy bridge set-command '<cmd>'`. Never auto-started by the autoswitch daemon or any other relay command; no launchd/systemd registration, so nothing survives reboot without an explicit `relay proxy start` again.
+- `relay proxy init` scaffolds a local LiteLLM config template (including a commented-out example for LiteLLM's own "ChatGPT Subscription" provider, with an inline warning that bridging a personal ChatGPT/Codex login this way may violate OpenAI's Terms of Service) — relay does not fill that section in or implement any token-bridging logic itself; the bridge process is entirely user-supplied.
+
 ### v2.8.0 — 2026-09-06
 - **Removed** `relay provider use <name>` and `relay provider off` — the global "always-on" provider switch (which mutated `${CLAUDE_DIR}/settings.json`) is gone entirely. All provider usage now goes through `relay run <name>`, which never touches global state.
 - Add Codex CLI as an alternate `relay run` exec target: `relay provider add <name> --codex` stores `agent=codex` (requires `--model`; `--discover-models`/`--subagent-model` are ignored with a warning), and `relay run <name> --codex`/`--claude` override the stored agent for a single invocation.
