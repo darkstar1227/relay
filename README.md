@@ -288,6 +288,9 @@ Sessions live in `~/.claude/projects/` and are shared across all accounts — af
 
 ## Changelog
 
+### v2.9.2 — 2026-09-08
+- Fix `relay run <name> --codex` 404ing on every request — Codex's Responses wire API always POSTs `<base_url>/responses`, so relay now appends `/v1` to the provider's `base_url` for Codex runs (unless already present), matching the OpenAI-style convention the gateway expects.
+
 ### v2.9.1 — 2026-09-08
 - Add `relay provider codex-models <name> [model1,model2,...]` — stores a rotation list of models for `--codex` runs (no argument shows the current list). Lets one LiteLLM provider serve both Claude Code (via its existing `discover_models`/`model`) and Codex CLI at once.
 - `relay run <name> --codex` now falls back to that rotation list when the provider has no pinned `--model`: each invocation advances to the next model and persists the cursor, instead of hard-erroring.

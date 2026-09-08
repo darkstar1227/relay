@@ -1258,8 +1258,17 @@ cmd_run() {
       fi
       [[ -z "${model}" ]] && { err "Provider '${name}' has no --model or codex_models set — Codex requires an explicit model (no discovery fallback)"; exit 1; }
 
+      # Codex's Responses wire API always POSTs "${base_url}/responses" — the
+      # OpenAI-style convention is a base_url that already ends in /v1, so
+      # append it here unless the provider's base_url already has it.
+      local codex_base_url="${base_url}"
+      case "${codex_base_url}" in
+        */v1) ;;
+        *) codex_base_url="${codex_base_url%/}/v1" ;;
+      esac
+
       local base_url_toml model_toml
-      base_url_toml=$(_toml_str "${base_url}")
+      base_url_toml=$(_toml_str "${codex_base_url}")
       model_toml=$(_toml_str "${model}")
 
       local codex_args=(
