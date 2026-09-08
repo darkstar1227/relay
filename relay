@@ -132,6 +132,31 @@ _provider_discover() {
   "${PY}" -c 'import json,sys; print("1" if json.load(open(sys.argv[1])).get("discover_models") else "")' "$(provider_file "$1")"
 }
 
+# comma-joined codex_models list for a provider; "" if absent
+_provider_codex_models() {
+  "${PY}" -c 'import json,sys; print(",".join(json.load(open(sys.argv[1])).get("codex_models") or []))' "$(provider_file "$1")"
+}
+
+# round-robins through a provider's stored codex_models list, persisting the
+# cursor back into the provider file; prints the picked model, "" if the list
+# is empty. Only consulted when --codex has no pinned --model to fall back on.
+_provider_codex_model_pick() {
+  "${PY}" -c '
+import json, sys
+path = sys.argv[1]
+d = json.load(open(path))
+models = d.get("codex_models") or []
+if not models:
+    print("")
+    sys.exit(0)
+cursor = (d.get("_codex_model_cursor", -1) + 1) % len(models)
+d["_codex_model_cursor"] = cursor
+with open(path, "w") as f:
+    json.dump(d, f)
+print(models[cursor])
+' "$(provider_file "$1")"
+}
+
 # escape a value for embedding as a TOML basic string in a `codex -c key="value"` arg
 _toml_str() {
   local s="$1"
@@ -949,6 +974,40 @@ cmd_provider_list() {
   done <<< "${names}"
 }
 
+cmd_provider_codex_models() {
+  local name="${1:-}"
+  [[ -z "${name}" ]] && { err "usage: relay provider codex-models <name> [model1,model2,...]"; exit 1; }
+  shift
+  provider_exists "${name}" || { err "Provider '${name}' not found"; exit 1; }
+
+  local csv="${1:-}"
+  if [[ -z "${csv}" ]]; then
+    local list; list=$(_provider_codex_models "${name}")
+    if [[ -z "${list}" ]]; then
+      warn "Provider '${name}' has no codex_models set"
+      log "Set one with: relay provider codex-models ${name} model-a,model-b,model-c"
+    else
+      printf '%s\n' "${list//,/$'\n'}"
+    fi
+    return 0
+  fi
+
+  RELAY_PROVIDER_PATH="$(provider_file "${name}")" \
+  RELAY_PROVIDER_CODEX_MODELS="${csv}" \
+  "${PY}" -c '
+import json, os
+path = os.environ["RELAY_PROVIDER_PATH"]
+csv = os.environ["RELAY_PROVIDER_CODEX_MODELS"]
+models = [m.strip() for m in csv.split(",") if m.strip()]
+d = json.load(open(path))
+d["codex_models"] = models
+d["_codex_model_cursor"] = -1
+with open(path, "w") as f:
+    json.dump(d, f)
+'
+  ok "Provider '${B}${name}${R}' codex_models set — 'relay run ${name} --codex' rotates through them on each call"
+}
+
 cmd_provider_remove() {
   local name="${1:-}"
   [[ -z "${name}" ]] && { err "usage: relay provider remove <name>"; exit 1; }
@@ -1193,7 +1252,11 @@ cmd_run() {
 
     if [[ "${agent}" == "codex" ]]; then
       require_codex
-      [[ -z "${model}" ]] && { err "Provider '${name}' has no --model set — Codex requires an explicit model (no discovery fallback)"; exit 1; }
+      if [[ -z "${model}" ]]; then
+        model=$(_provider_codex_model_pick "${name}")
+        [[ -n "${model}" ]] && ok "Rotated Codex model for '${name}': ${model}"
+      fi
+      [[ -z "${model}" ]] && { err "Provider '${name}' has no --model or codex_models set — Codex requires an explicit model (no discovery fallback)"; exit 1; }
 
       local base_url_toml model_toml
       base_url_toml=$(_toml_str "${base_url}")
@@ -2879,6 +2942,8 @@ cmd_help() {
   printf "  %-42s %s\n" "                              " "(requires --model; --discover-models / --subagent-model don't apply)"
   printf "  %-42s %s\n" "  relay provider list"         "list configured providers + their settings"
   printf "  %-42s %s\n" "  relay provider remove <name>" "delete a provider (prompts for confirmation)"
+  printf "  %-42s %s\n" "  relay provider codex-models <name>" "show/set a rotation list of models for --codex (no arg = show)"
+  printf "  %-42s %s\n" "                              " "with no pinned --model, each --codex run rotates to the next one"
   echo ""
 
   printf "  ${B}Local proxies (manual)${R}\n"
@@ -2969,7 +3034,8 @@ case "${CMD}" in
       add)    cmd_provider_add "$@" ;;
       list|ls) cmd_provider_list ;;
       remove|rm) cmd_provider_remove "$@" ;;
-      *) err "usage: relay provider <add|list|remove> ..."; exit 1 ;;
+      codex-models) cmd_provider_codex_models "$@" ;;
+      *) err "usage: relay provider <add|list|remove|codex-models> ..."; exit 1 ;;
     esac ;;
   proxy|px)
     sub="${1:-}"

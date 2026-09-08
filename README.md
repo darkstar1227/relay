@@ -288,6 +288,10 @@ Sessions live in `~/.claude/projects/` and are shared across all accounts — af
 
 ## Changelog
 
+### v2.9.1 — 2026-09-08
+- Add `relay provider codex-models <name> [model1,model2,...]` — stores a rotation list of models for `--codex` runs (no argument shows the current list). Lets one LiteLLM provider serve both Claude Code (via its existing `discover_models`/`model`) and Codex CLI at once.
+- `relay run <name> --codex` now falls back to that rotation list when the provider has no pinned `--model`: each invocation advances to the next model and persists the cursor, instead of hard-erroring.
+
 ### v2.9.0 — 2026-09-06
 - Add `relay proxy` (alias `px`): manual-only local process supervisor for a LiteLLM proxy and a user-supplied "bridge" command — `init`/`start`/`stop`/`status`/`log`, plus `proxy bridge set-command '<cmd>'`. Never auto-started by the autoswitch daemon or any other relay command; no launchd/systemd registration, so nothing survives reboot without an explicit `relay proxy start` again.
 - `relay proxy init` scaffolds a local LiteLLM config template (including a commented-out example for LiteLLM's own "ChatGPT Subscription" provider, with an inline warning that bridging a personal ChatGPT/Codex login this way may violate OpenAI's Terms of Service) — relay does not fill that section in or implement any token-bridging logic itself; the bridge process is entirely user-supplied.

@@ -1,6 +1,6 @@
 {
   "name": "@dst-justin/relay",
-  "version": "2.9.0",
+  "version": "2.9.1",
   "description": "Multi-account switcher for Claude Code — instant credential swap across macOS, Linux, and Windows, with one-off LiteLLM provider runs targeting Claude Code or Codex CLI",
   "bin": {
     "relay": "./relay.js"
