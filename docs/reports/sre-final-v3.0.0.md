@@ -98,7 +98,15 @@ Helper RSS 降低約 75.0%；完整 CLI RSS 反而增加約 0.08%，視為沒有
 
 測試數與 job 數是不同分母，不能相加成「獨立功能覆蓋數」。通過不代表所有故障時點都被驗證。
 
-發布 tag 另外觸發 [npm 發布工作](https://github.com/darkstar1227/relay/actions/runs/34562565674)，需再次通過驗證才執行 npm publish；本文件不以 tag 存在代替 registry 發布成功。
+### 發布結果與保留的失敗紀錄
+
+首次 [tag 發布工作](https://github.com/darkstar1227/relay/actions/runs/34562565674) 的驗證全部通過，但 publish 失敗：`dist/套件.tgz` 缺少明確的 `./`，被 npm 誤判成 GitHub repository 路徑。這是發布流程缺陷，不能記為首次全綠。
+
+修復提交 `1441f35` 改用 `./dist/*.tgz`，並提供明確 checkout 既有 tag 的重跑入口；保留 `v3.0.0` 指向原程式碼，不移動 tag。[修復後發布工作](https://github.com/darkstar1227/relay/actions/runs/34563118408) 的驗證與 npm publish **全部成功**。
+
+已獨立向 npm registry 查得 `@dst-justin/relay@3.0.0`，下載公開 tarball 後於 macOS arm64／Node 22.20.0 隔離安裝驗證通過。套件 49,118 bytes、8 個檔案，SHA1 `3a2587bb9e0a935c93abf7f836f2251088587459`；registry integrity：`sha512-h2lXClE0tfBrdq1zD0Gd/wvz+cIKCzjAM4O0jcZytncP759R1IwKqIh1e/rPgbVWQX+5HuHwNPPCcNoLY5dzug==`。
+
+這項 registry 後驗證僅在本機 macOS 執行；六組跨平台安裝證據來自發布前 CI。沒有再次 npm publish，也沒有以 registry 主套件上架冒充 native-core npm 套件已發布。
 
 ## 4. 一致性、故障恢復與操作風險
 
