@@ -2,6 +2,8 @@
 
 Claude Code 多帳號快速切換工具。
 
+開發者：`relay` 是分組原始碼組合產物，請參閱[開發流程](docs/development.md)、[Rust core 進度](docs/development-rust-core.md)及[分階段 SRE](docs/reports/sre-stages.md)。Rust 目前是開發 opt-in，尚非正式套件預設 runtime。
+
 ## 安裝
 
 ```bash

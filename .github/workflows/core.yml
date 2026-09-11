@@ -1,0 +1,60 @@
+name: Validate Rust core migration
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  core:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      # Hosted runners provide rustup; no source compilation happens at install.
+      - run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+      - run: rustup default stable
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: npm run build:check
+      - run: npm run test:core
+      - run: cargo build --release --locked
+      - run: node --test tests/core/pair-install.test.cjs
+      - run: node scripts/core-package.cjs dist/core
+      - uses: actions/upload-artifact@v4
+        with:
+          name: relay-core-native-${{ matrix.os }}
+          path: dist/core/*.tgz
+          if-no-files-found: error
+      - run: git diff --exit-code
+
+  windows-portable-core:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - run: cargo build --locked --features test-fixtures
+      - run: cargo test --locked
+      - name: Validate Windows portable core operations
+        shell: pwsh
+        run: |
+          $env:RELAY_CORE_TEST_BIN = Join-Path $PWD 'target/debug/relay-core.exe'
+          node --test tests/core/portable.test.cjs tests/core/network.test.cjs
+      - run: cargo build --release --locked
+      - name: Validate Windows release core platform contract
+        shell: pwsh
+        run: |
+          $env:RELAY_CORE_TEST_BIN = Join-Path $PWD 'target/release/relay-core.exe'
+          node --test tests/core/portable.test.cjs

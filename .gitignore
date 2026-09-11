@@ -3,3 +3,6 @@ node_modules/
 *.tgz
 .codegraph/
 .superpowers/
+target/
+dist/
+__pycache__/

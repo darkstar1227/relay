@@ -2,6 +2,8 @@
 
 A lightweight CLI tool for switching between multiple Claude Code accounts instantly.
 
+Contributors: `relay` is generated from grouped sources; see [development](docs/development.md), [Rust core progress](docs/development-rust-core.md), and [per-stage SRE reports](docs/reports/sre-stages.md). Rust is currently development opt-in, not the published default.
+
 ## Platform Support
 
 | Platform | Credential Storage |

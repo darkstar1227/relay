@@ -1,0 +1,4 @@
+relay text eol=lf
+src/** text eol=lf
+scripts/** text eol=lf
+tests/** text eol=lf

@@ -1,4 +1,4 @@
-#!/usr/bin/env pwsh
+﻿#!/usr/bin/env pwsh
 # ─────────────────────────────────────────────────────────────────────────────
 # relay.ps1 — multi-account switcher for Claude Code  (Windows / PowerShell 5.1+)
 # Usage: relay [command] [args...]
@@ -133,7 +133,9 @@ function Invoke-TokenRefresh($credPath) {
                      -Headers @{ "User-Agent" = "relay/2.0"; "anthropic-version" = "oauth-2025-04-20" } -TimeoutSec 10
         $oauth.accessToken = $resp.access_token
         if ($resp.refresh_token) { $oauth.refreshToken = $resp.refresh_token }
-        $expiresMs = [System.DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() + ($resp.expires_in ?? 3600) * 1000
+        $expiresIn = 3600
+        if ($null -ne $resp.expires_in) { $expiresIn = $resp.expires_in }
+        $expiresMs = [System.DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() + $expiresIn * 1000
         $oauth | Add-Member -NotePropertyName expiresAt -NotePropertyValue $expiresMs -Force
         $d.claudeAiOauth = $oauth
         $d | ConvertTo-Json -Depth 10 | Set-Content $credPath -Encoding UTF8

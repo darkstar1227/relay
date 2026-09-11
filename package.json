@@ -1,6 +1,6 @@
 {
   "name": "@dst-justin/relay",
-  "version": "2.9.2",
+  "version": "3.0.0",
   "description": "Multi-account switcher for Claude Code — instant credential swap across macOS, Linux, and Windows, with one-off LiteLLM provider runs targeting Claude Code or Codex CLI",
   "bin": {
     "relay": "./relay.js"
@@ -14,6 +14,14 @@
     "README.md"
   ],
   "scripts": {
+    "build": "node scripts/build.cjs",
+    "build:check": "node scripts/build.cjs --check",
+    "build:core": "cargo build --release --locked",
+    "test:core-package": "node scripts/core-package.cjs",
+    "test:core-pair": "node --test tests/core/pair-install.test.cjs",
+    "test": "node scripts/check-syntax.cjs && node --test tests/*.test.cjs",
+    "test:core": "node scripts/test-core.cjs",
+    "test:package": "node scripts/verify-package.cjs",
     "postinstall": "node -e \"if(process.platform!=='win32'){try{require('fs').chmodSync(require('path').join(__dirname,'relay'),'755')}catch(_){}}\" && node postinstall.js"
   },
   "engines": {

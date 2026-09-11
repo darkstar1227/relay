@@ -1,0 +1,34 @@
+{
+  "blankLineAfter": [
+    "bootstrap.sh",
+    "account-switch.sh",
+    "usage-commands.sh",
+    "providers.sh",
+    "proxy.sh",
+    "run.sh",
+    "account-management.sh",
+    "autoswitch.sh",
+    "account-policy.sh",
+    "warmup.sh",
+    "maintenance.sh",
+    "help.sh"
+  ],
+  "shell": [
+    "bootstrap.sh",
+    "core-data.sh",
+    "account-store.sh",
+    "usage-table.sh",
+    "account-switch.sh",
+    "usage-commands.sh",
+    "providers.sh",
+    "proxy.sh",
+    "run.sh",
+    "account-management.sh",
+    "autoswitch.sh",
+    "account-policy.sh",
+    "warmup.sh",
+    "maintenance.sh",
+    "help.sh",
+    "dispatch.sh"
+  ]
+}

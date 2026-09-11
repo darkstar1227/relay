@@ -9,7 +9,7 @@ GitHub: `darkstar1227/relay`
 
 ## Architecture
 
-Everything lives in one bash script, `relay` (~1800 lines, macOS bash 3.2 compatible). Key pieces:
+The root `relay` is generated: edit `src/shell`, `src/python`, and `src/manifest.json`, then run `npm run build`. Do not edit generated `relay` directly. The opt-in Rust core lives under `crates/relay-core`; run `npm run test:core`. Current migration boundaries and per-stage SRE evidence are in `docs/development-rust-core.md` and `docs/reports/sre-stages.md`. Key pieces:
 - Command dispatch is a single `case` at the bottom of the file (search `cmd_<name>` for each subcommand's implementation).
 - The autoswitch daemon is Python, embedded as a heredoc inside `relay` (`_extract_daemon()`) and written out to `~/.claude-relay/autoswitch-daemon.py` at install time. It's managed via a macOS launchd plist or Linux systemd user service — there is no separate daemon source file in this repo.
 - Credentials: macOS uses Keychain (service `Claude Code-credentials`); Linux uses `~/.claude/.credentials.json`. Relay's own per-account store lives at `~/.claude-relay/credentials/<name>.json`.

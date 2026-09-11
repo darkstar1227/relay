@@ -1,0 +1,21 @@
+[package]
+name = "relay-core"
+version = "3.0.0"
+edition = "2021"
+rust-version = "1.89"
+publish = false
+license = "MIT"
+description = "Internal, version-paired Relay operations (not the public CLI)"
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+serde_json = { version = "1.0", features = ["preserve_order", "arbitrary_precision"] }
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls"] }
+signal-hook = "0.3"
+
+[features]
+# Never enabled in release builds; permits isolated fixture-only HTTP tests.
+test-fixtures = []
+
+[build-dependencies]
+serde_json = "1.0"
