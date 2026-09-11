@@ -1,6 +1,12 @@
 name: Publish to npm
 
 on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing release tag to validate and publish
+        required: true
+        type: string
   push:
     tags:
       - 'v*'
@@ -11,17 +17,23 @@ permissions:
 jobs:
   validate:
     uses: ./.github/workflows/ci.yml
+    with:
+      source_ref: ${{ inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
   publish:
     needs: validate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
       - uses: actions/setup-node@v6
         with:
           node-version: '24'
           registry-url: 'https://registry.npmjs.org'
       - name: Check release tag matches package version
-        run: test "$GITHUB_REF_NAME" = "v$(node -p 'require("./package.json").version')"
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+        run: test "$RELEASE_TAG" = "v$(node -p 'require("./package.json").version')"
       - uses: actions/download-artifact@v4
         with:
           name: relay-npm
@@ -30,7 +42,7 @@ jobs:
         shell: bash
         run: |
           shopt -s nullglob
-          packages=(dist/*.tgz)
+          packages=(./dist/*.tgz)
           test "${#packages[@]}" -eq 1
           npm publish "${packages[0]}" --access public
         env:
