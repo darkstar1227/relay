@@ -147,6 +147,30 @@ pub fn run(operation: &str, args: &[String]) -> Result<()> {
                 }
             }
             "reorder" => cfg["order"] = json!(args[1].split(',').collect::<Vec<_>>()),
+            "autoswitch-prune-account" => {
+                let name = args[1].as_str();
+                if let Some(order) = cfg["order"].as_array() {
+                    cfg["order"] = json!(order
+                        .iter()
+                        .filter(|n| n.as_str() != Some(name))
+                        .cloned()
+                        .collect::<Vec<_>>());
+                }
+                if let Some(thresholds) = cfg["thresholds"].as_object() {
+                    cfg["thresholds"] = json!(thresholds
+                        .iter()
+                        .filter(|(k, _)| k.as_str() != name)
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect::<serde_json::Map<_, _>>());
+                }
+                if let Some(locks) = cfg["locks"].as_array() {
+                    cfg["locks"] = json!(locks
+                        .iter()
+                        .filter(|n| n.as_str() != Some(name))
+                        .cloned()
+                        .collect::<Vec<_>>());
+                }
+            }
             "warmup-pause" | "warmup-resume" => {
                 cfg["warmup_enabled"] = json!(operation == "warmup-resume")
             }

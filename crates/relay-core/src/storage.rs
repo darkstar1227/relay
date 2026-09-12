@@ -4,6 +4,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
@@ -60,11 +61,34 @@ pub fn write_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
     file.sync_all().map_err(|_| "cannot sync temporary file")?;
     drop(file);
     fs::rename(&temporary.0, path).map_err(|_| "cannot replace JSON file")?;
+    // The rename above already made the new contents durable and visible;
+    // a directory-fsync failure here does not undo that, so it's best-effort.
     #[cfg(unix)]
-    File::open(parent)
-        .and_then(|dir| dir.sync_all())
-        .map_err(|_| "JSON replaced but directory sync failed")?;
+    let _ = File::open(parent).and_then(|dir| dir.sync_all());
     Ok(())
+}
+
+/// Open (creating if needed) a private 0600 file and acquire an exclusive lock on it.
+/// `timeout`: `None` blocks indefinitely; `Some(d)` polls and gives up after `d`.
+pub fn open_locked_private(path: &Path, timeout: Option<Duration>) -> Result<File> {
+    let file = private_options()
+        .create(true)
+        .truncate(false)
+        .open(path)
+        .map_err(|_| "cannot open lock file")?;
+    match timeout {
+        None => file.lock().map_err(|_| "cannot acquire lock")?,
+        Some(timeout) => {
+            let started = Instant::now();
+            while file.try_lock().is_err() {
+                if started.elapsed() >= timeout {
+                    return Err("lock timed out");
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+    }
+    Ok(file)
 }
 
 /// Stable sidecar inode: never lock the file that atomic replacement renames.

@@ -131,7 +131,18 @@ cmd_remove() {
   [[ "${c}" = "y" || "${c}" = "Y" ]] || { log "cancelled"; return 0; }
   rm -f "$(account_creds "${name}")" "$(account_meta "${name}")"
   remove_from_order "${name}"
-  [[ "$(current_name)" == "${name}" ]] && rm -f "${CURRENT_FILE}"
+  # Drop the deleted account from autoswitch's order/thresholds/locks too, so
+  # rotation never picks a target with no credential file on disk. Warmup
+  # entries are left untouched — deleting an account shouldn't force the user
+  # to redo unrelated warmup config.
+  [[ -f "${RELAY_DIR}/autoswitch.json" ]] && _relay_data autoswitch-prune-account "${RELAY_DIR}/autoswitch.json" "${name}"
+  if [[ "$(current_name)" == "${name}" ]]; then
+    rm -f "${CURRENT_FILE}"
+    local next; next=$(list_account_names | head -1)
+    if [[ -n "${next}" ]]; then
+      do_switch "${next}"
+    fi
+  fi
   ok "Deleted '${name}' (sessions are unaffected)"
 }
 

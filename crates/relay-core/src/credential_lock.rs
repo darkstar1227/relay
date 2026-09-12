@@ -1,22 +1,16 @@
-use crate::Result;
+use crate::{storage, Result};
 
 /// Hold the same inode/flock as the existing Python daemon until FIFO EOF.
 #[cfg(unix)]
 pub fn run(args: &[String]) -> Result<()> {
-    use std::fs::{File, OpenOptions};
+    use std::fs::File;
     use std::io::{self, Write};
-    use std::os::unix::fs::OpenOptionsExt;
+    use std::path::Path;
     let [path, ready, release] = args else {
         return Err("invalid credential lock arguments");
     };
-    let lock = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        .open(path)
-        .map_err(|_| "cannot open credential lock")?;
-    lock.lock().map_err(|_| "cannot acquire credential lock")?;
+    let _lock = storage::open_locked_private(Path::new(path), None)
+        .map_err(|_| "cannot acquire credential lock")?;
     File::create(ready)
         .and_then(|mut pipe| pipe.write_all(b"ready\n"))
         .map_err(|_| "cannot signal credential lock readiness")?;

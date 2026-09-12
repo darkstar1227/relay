@@ -1,16 +1,8 @@
-use crate::{http, Result};
-use std::fs::{self, OpenOptions};
+use crate::{http, storage, Result};
+use std::fs;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
-static NEXT: AtomicU64 = AtomicU64::new(0);
-struct Temporary(PathBuf);
-impl Drop for Temporary {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.0);
-    }
-}
 fn version_valid(version: &str) -> bool {
     if version.is_empty()
         || version.len() > 128
@@ -78,54 +70,32 @@ pub fn run(args: &[String]) -> Result<()> {
         .stderr(Stdio::null())
         .spawn()
         .map_err(|_| "cannot validate Bash syntax")?;
-    let wrote = validator
+    // Write on a separate thread so a `bash -n` that doesn't drain stdin fast
+    // enough (content can exceed the OS pipe buffer) can't deadlock us against
+    // a full pipe while we're blocked in write_all on the parent thread.
+    let mut stdin = validator
         .stdin
         .take()
-        .ok_or("cannot open validator input")?
-        .write_all(&content);
+        .ok_or("cannot open validator input")?;
+    let to_write = content.clone();
+    let writer = std::thread::spawn(move || stdin.write_all(&to_write));
     let valid = validator
         .wait()
         .map_err(|_| "cannot wait for syntax validation")?;
+    let wrote = writer.join().map_err(|_| "validator writer thread panicked")?;
     if wrote.is_err() || !valid.success() {
         return Err("downloaded script failed Bash syntax validation");
     }
     let path = Path::new(path);
-    let parent = path.parent().ok_or("invalid script path")?;
-    let (temporary, mut file) = (0..128)
-        .find_map(|_| {
-            let candidate = parent.join(format!(
-                ".relay-update-{}-{}",
-                std::process::id(),
-                NEXT.fetch_add(1, Ordering::Relaxed)
-            ));
-            let mut options = OpenOptions::new();
-            options.write(true).create_new(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.mode(0o600);
-            }
-            options
-                .open(&candidate)
-                .ok()
-                .map(|file| (Temporary(candidate), file))
-        })
-        .ok_or("cannot create private download file")?;
-    file.write_all(&content)
-        .map_err(|_| "cannot write download")?;
+    // Reuses storage's atomic private-temp-file/rename/fsync sequence, then
+    // marks the installed script executable.
+    storage::write_bytes(path, &content)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        file.set_permissions(fs::Permissions::from_mode(0o755))
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755))
             .map_err(|_| "cannot set script mode")?;
     }
-    file.sync_all().map_err(|_| "cannot sync download")?;
-    drop(file);
-    fs::rename(&temporary.0, path).map_err(|_| "cannot install downloaded script")?;
-    #[cfg(unix)]
-    fs::File::open(parent)
-        .and_then(|dir| dir.sync_all())
-        .map_err(|_| "script replaced but directory sync failed")?;
     Ok(())
 }
 

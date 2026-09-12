@@ -23,10 +23,11 @@ fn color(u: i64) -> &'static str {
     }
 }
 fn bar(u: i64, width: usize) -> String {
-    // Python uses ties-to-even; bound malformed upstream utilization allocations.
+    // Python uses ties-to-even; bound malformed upstream utilization allocations
+    // to the bar's own width so the row never overruns the fixed-width table.
     let full = (u as f64 / 100.0 * width as f64)
         .round_ties_even()
-        .clamp(0.0, 1000.0) as usize;
+        .clamp(0.0, width as f64) as usize;
     format!(
         "{}{}",
         "█".repeat(full),

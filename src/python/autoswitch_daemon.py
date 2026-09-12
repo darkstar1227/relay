@@ -380,11 +380,16 @@ def main():
         if cur_threshold is None or cur_util is None or cur_util < cur_threshold:
             time.sleep(sleep_sec); continue
 
-        # Ordered cycling: walk order[] from current position, skip blocked accounts
-        idx = order.index(current) if current in order else 0
+        # Ordered cycling: walk order[] from current position, skip blocked accounts.
+        # When current isn't in order (removed from the list while still active),
+        # every entry is a legitimate candidate -- not just order[1:].
         target = None
-        for i in range(1, len(order)):
-            candidate = order[(idx + i) % len(order)]
+        if current in order:
+            idx = order.index(current)
+            candidates = [order[(idx + i) % len(order)] for i in range(1, len(order))]
+        else:
+            candidates = order
+        for candidate in candidates:
             if not is_blocked(candidate, thresholds, locks, usage):
                 target = candidate
                 break

@@ -146,6 +146,10 @@ PYEOF
 {{python:warmup_resume.py}}
 PYEOF
       ;;
+    autoswitch-prune-account) "${PY}" - "$@" <<'PYEOF'
+{{python:autoswitch_prune_account.py}}
+PYEOF
+      ;;
     *) err "Unknown internal data operation"; return 1 ;;
   esac
 }

@@ -816,6 +816,7 @@ version = "3.0.0"
 dependencies = [
  "chrono",
  "reqwest",
+ "security-framework",
  "serde_json",
  "signal-hook",
 ]

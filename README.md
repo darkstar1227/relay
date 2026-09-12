@@ -290,6 +290,12 @@ Sessions live in `~/.claude/projects/` and are shared across all accounts — af
 
 ## Changelog
 
+### v3.0.1 — 2026-09-13
+- Fix `relay remove` leaving the account switcher on an empty account: deleting the currently active account now auto-switches to the next remaining account instead of just clearing state.
+- `relay remove` now also prunes the deleted account from `autoswitch.json`'s `order`/`thresholds`/`locks`, so the daemon never rotates onto a name with no credential file — warmup config is left untouched, so this never forces a warmup reconfigure.
+- Fix the autoswitch daemon's rotation skipping the first account in the order list when the current account isn't in it (embedded daemon + Rust core).
+- Harden the Rust core: native macOS Keychain access (no more secrets in process argv), atomic config writes deduped through one helper, best-effort daemon logging that can't take down the process, DST-safe local-time handling, and a stdin-write deadlock fix in the self-update downloader.
+
 ### v2.9.2 — 2026-09-08
 - Fix `relay run <name> --codex` 404ing on every request — Codex's Responses wire API always POSTs `<base_url>/responses`, so relay now appends `/v1` to the provider's `base_url` for Codex runs (unless already present), matching the OpenAI-style convention the gateway expects.
 

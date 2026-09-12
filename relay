@@ -1043,6 +1043,16 @@ cfg['warmup_enabled'] = True
 json.dump(cfg, open(cfg_path, 'w'), indent=2)
 PYEOF
       ;;
+    autoswitch-prune-account) "${PY}" - "$@" <<'PYEOF'
+import json, sys
+cfg_path, name = sys.argv[1], sys.argv[2]
+cfg = json.load(open(cfg_path))
+cfg['order'] = [n for n in cfg.get('order', []) if n != name]
+cfg['thresholds'] = {k: v for k, v in cfg.get('thresholds', {}).items() if k != name}
+cfg['locks'] = [n for n in cfg.get('locks', []) if n != name]
+json.dump(cfg, open(cfg_path, 'w'), indent=2)
+PYEOF
+      ;;
     *) err "Unknown internal data operation"; return 1 ;;
   esac
 }
@@ -1931,7 +1941,18 @@ cmd_remove() {
   [[ "${c}" = "y" || "${c}" = "Y" ]] || { log "cancelled"; return 0; }
   rm -f "$(account_creds "${name}")" "$(account_meta "${name}")"
   remove_from_order "${name}"
-  [[ "$(current_name)" == "${name}" ]] && rm -f "${CURRENT_FILE}"
+  # Drop the deleted account from autoswitch's order/thresholds/locks too, so
+  # rotation never picks a target with no credential file on disk. Warmup
+  # entries are left untouched — deleting an account shouldn't force the user
+  # to redo unrelated warmup config.
+  [[ -f "${RELAY_DIR}/autoswitch.json" ]] && _relay_data autoswitch-prune-account "${RELAY_DIR}/autoswitch.json" "${name}"
+  if [[ "$(current_name)" == "${name}" ]]; then
+    rm -f "${CURRENT_FILE}"
+    local next; next=$(list_account_names | head -1)
+    if [[ -n "${next}" ]]; then
+      do_switch "${next}"
+    fi
+  fi
   ok "Deleted '${name}' (sessions are unaffected)"
 }
 
@@ -2394,11 +2415,16 @@ def main():
         if cur_threshold is None or cur_util is None or cur_util < cur_threshold:
             time.sleep(sleep_sec); continue
 
-        # Ordered cycling: walk order[] from current position, skip blocked accounts
-        idx = order.index(current) if current in order else 0
+        # Ordered cycling: walk order[] from current position, skip blocked accounts.
+        # When current isn't in order (removed from the list while still active),
+        # every entry is a legitimate candidate -- not just order[1:].
         target = None
-        for i in range(1, len(order)):
-            candidate = order[(idx + i) % len(order)]
+        if current in order:
+            idx = order.index(current)
+            candidates = [order[(idx + i) % len(order)] for i in range(1, len(order))]
+        else:
+            candidates = order
+        for candidate in candidates:
             if not is_blocked(candidate, thresholds, locks, usage):
                 target = candidate
                 break

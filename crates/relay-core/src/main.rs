@@ -59,6 +59,7 @@ fn run(args: &[String]) -> Result<()> {
         | "warmup-remove"
         | "warmup-pause"
         | "warmup-resume"
+        | "autoswitch-prune-account"
         | "lock-default-config"
         | "warmup-ensure-config"
         | "config-save"

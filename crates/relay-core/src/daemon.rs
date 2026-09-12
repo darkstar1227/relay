@@ -11,7 +11,9 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-fn log(dir: &Path, event: &str, fields: Value) -> Result<()> {
+// Best-effort: a transient logging failure (disk full, permission change) must
+// never take down the long-running daemon, so this swallows its own errors.
+fn log(dir: &Path, event: &str, fields: Value) {
     let mut value = fields;
     value["ts"] = json!(oauth::now_ms() / 1000);
     value["event"] = json!(event);
@@ -22,10 +24,9 @@ fn log(dir: &Path, event: &str, fields: Value) -> Result<()> {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let mut file = options
-        .open(dir.join("autoswitch.log"))
-        .map_err(|_| "cannot open daemon log")?;
-    writeln!(file, "{value}").map_err(|_| "cannot write daemon log")
+    if let Ok(mut file) = options.open(dir.join("autoswitch.log")) {
+        let _ = writeln!(file, "{value}");
+    }
 }
 fn child(command: &mut Command, timeout: u64, stop: &AtomicBool) -> bool {
     let Ok(mut process) = command
@@ -121,7 +122,7 @@ fn warmup(dir: &Path, config: &Value, stop: &AtomicBool) -> Result<()> {
         if age > 900 {
             state[&key] = json!({"date":today,"status":"missed"});
             changed = true;
-            log(dir, "warmup_missed", json!({"account":account,"time":time}))?;
+            log(dir, "warmup_missed", json!({"account":account,"time":time}));
             continue;
         }
         if !dir
@@ -133,12 +134,12 @@ fn warmup(dir: &Path, config: &Value, stop: &AtomicBool) -> Result<()> {
                 dir,
                 "warmup_pending",
                 json!({"account":account,"reason":"missing_account"}),
-            )?;
+            );
             continue;
         }
         let before = oauth::text(&dir.join("current"));
         oauth::switch(account)?;
-        log(dir, "warmup_switch", json!({"account":account}))?;
+        log(dir, "warmup_switch", json!({"account":account}));
         let configured = oauth::text(&dir.join("claude_bin"));
         let binary = if !configured.is_empty() && Path::new(&configured).exists() {
             configured
@@ -150,7 +151,7 @@ fn warmup(dir: &Path, config: &Value, stop: &AtomicBool) -> Result<()> {
             30,
             stop,
         );
-        log(dir, "warmup_ping", json!({"account":account,"ok":ok}))?;
+        log(dir, "warmup_ping", json!({"account":account,"ok":ok}));
         if !before.is_empty()
             && before != account
             && dir
@@ -159,7 +160,7 @@ fn warmup(dir: &Path, config: &Value, stop: &AtomicBool) -> Result<()> {
                 .is_file()
             && oauth::restore_if_current(account, &before)?
         {
-            log(dir, "warmup_restore", json!({"account":before}))?;
+            log(dir, "warmup_restore", json!({"account":before}));
         }
         state[&key] = json!({"date":today,"status":if ok { "ok" } else { "ping_failed" }});
         changed = true;
@@ -196,7 +197,7 @@ pub fn tick(stop: &AtomicBool) -> Result<u64> {
                     &dir,
                     "config_parse_error",
                     json!({"error":"invalid configuration"}),
-                )?;
+                );
             }
             let names = oauth::names(&dir.join("credentials"))?;
             if names.len() < 2 {
@@ -252,9 +253,14 @@ pub fn tick(stop: &AtomicBool) -> Result<u64> {
     if !over {
         return Ok(sleep);
     }
-    let index = names.iter().position(|s| *s == current).unwrap_or(0);
-    let target = (1..names.len())
-        .map(|i| names[(index + i) % names.len()])
+    // When `current` isn't in `names` (removed from order while still active),
+    // every name is a legitimate rotation candidate — not just names[1..].
+    let mut candidates: Box<dyn Iterator<Item = &str>> = match names.iter().position(|s| *s == current)
+    {
+        Some(index) => Box::new((1..names.len()).map(move |i| names[(index + i) % names.len()])),
+        None => Box::new(names.iter().copied()),
+    };
+    let target = candidates
         .find(|name| {
             let locked = cfg["locks"]
                 .as_array()
@@ -270,11 +276,11 @@ pub fn tick(stop: &AtomicBool) -> Result<u64> {
                 &dir,
                 "switch",
                 json!({"frm":current,"to":target,"usage":cur}),
-            )?;
+            );
             notify(&format!("switched {current} → {target}"), stop);
         }
     } else {
-        log(&dir, "all_blocked", json!({"current":current}))?;
+        log(&dir, "all_blocked", json!({"current":current}));
         notify("All accounts at limit — staying on current account", stop);
     }
     Ok(sleep)
@@ -304,19 +310,12 @@ pub fn run(args: &[String]) -> Result<()> {
         .truncate(false)
         .open(dir.join("autoswitch.instance.lock"))
         .map_err(|_| "cannot open instance lock")?;
+    // The flock above is the sole source of truth for single-instance exclusivity.
+    // A secondary PID+kill-0 check on autoswitch.lock is redundant and unsound:
+    // once the process the stale PID belonged to exits, the OS can reassign that
+    // PID to an unrelated process, making the check wrongly refuse startup.
     singleton.try_lock().map_err(|_| "daemon already running")?;
     let pid_path = dir.join("autoswitch.lock");
-    let old = oauth::text(&pid_path);
-    if old.parse::<u32>().is_ok()
-        && Command::new("kill")
-            .args(["-0", &old])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success())
-    {
-        return Err("daemon already running");
-    }
     storage::write_bytes(&pid_path, std::process::id().to_string().as_bytes())?;
     let _pid = PidFile(pid_path);
     let log_path = dir.join("autoswitch.log");
@@ -328,7 +327,7 @@ pub fn run(args: &[String]) -> Result<()> {
             (lines[lines.len() - 200..].join("\n") + "\n").as_bytes(),
         )?;
     }
-    log(&dir, "start", json!({}))?;
+    log(&dir, "start", json!({}));
     let mut last_refresh = 0;
     while !stop.load(Ordering::Relaxed) {
         if oauth::now_ms() - last_refresh > 1_800_000 {
@@ -348,7 +347,7 @@ pub fn run(args: &[String]) -> Result<()> {
         let seconds = match tick(&stop) {
             Ok(s) => s,
             Err(_) => {
-                log(&dir, "cycle_error", json!({"error":"cycle failed"}))?;
+                log(&dir, "cycle_error", json!({"error":"cycle failed"}));
                 60
             }
         };
@@ -359,6 +358,6 @@ pub fn run(args: &[String]) -> Result<()> {
             std::thread::sleep(Duration::from_secs(1));
         }
     }
-    log(&dir, "stop", json!({}))?;
+    log(&dir, "stop", json!({}));
     Ok(())
 }

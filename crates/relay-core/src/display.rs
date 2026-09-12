@@ -1,4 +1,4 @@
-use crate::{storage, Result};
+use crate::{data::truthy, storage, Result};
 use chrono::{DateTime, Local, TimeZone};
 use serde_json::Value;
 use std::{
@@ -35,17 +35,6 @@ fn py(value: Option<&Value>) -> String {
         Some(Value::String(s)) => s.clone(),
         Some(Value::Bool(b)) => if *b { "True" } else { "False" }.into(),
         Some(v) => v.to_string(),
-    }
-}
-
-fn truthy(value: Option<&Value>) -> bool {
-    match value {
-        None | Some(Value::Null) => false,
-        Some(Value::Bool(b)) => *b,
-        Some(Value::Number(n)) => n.as_f64() != Some(0.0),
-        Some(Value::String(s)) => !s.is_empty(),
-        Some(Value::Array(a)) => !a.is_empty(),
-        Some(Value::Object(o)) => !o.is_empty(),
     }
 }
 
@@ -159,6 +148,9 @@ fn health(cfg_path: &Path, log_path: &Path) -> Result<String> {
                 count.1 += 1;
             }
             Some("warmup_ping") => {
+                // Matches by account only, same as warmup_health.py: a ping event
+                // carries no `time`, so it's intentionally attributed to every
+                // schedule entry for that account (source-of-truth parity, not a bug).
                 for entry in entries {
                     if entry.get("account") == rec.get("account") {
                         let count = counts.entry(key(entry)).or_default();
@@ -289,7 +281,9 @@ fn event_log(path: &Path) -> Result<String> {
             Some(n) if n.is_finite() => n.floor(),
             _ => continue,
         };
-        let time = match Local.timestamp_opt(ts as i64, 0).single() {
+        // `.earliest()` still resolves DST fall-back's ambiguous hour (two valid
+        // local times); only a spring-forward gap yields no valid time at all.
+        let time = match Local.timestamp_opt(ts as i64, 0).earliest() {
             Some(t) => t.format("%m/%d %H:%M").to_string(),
             None => continue,
         };
